@@ -1,8 +1,17 @@
-# TilliT Backend
+<p align="center">
+  <img src="logo.png" alt="TilliT" width="120" />
+</p>
 
-End-to-end encrypted chat server with Signal Protocol. Self-hosted, zero-knowledge, plug & play — designed to run on dedicated hardware.
+<h1 align="center">TilliT Backend</h1>
 
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+<p align="center">
+  End-to-end encrypted chat server with Signal Protocol.<br>
+  Self-hosted, zero-knowledge, plug & play — designed to run on dedicated hardware.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL-3.0"></a>
+</p>
 
 > **Pre-release** — The backend is functional and in open beta testing. The mobile app source code and public App Store release are coming soon.
 
