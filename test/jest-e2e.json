@@ -1,0 +1,16 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": ".",
+  "testEnvironment": "node",
+  "testRegex": ".e2e-spec.ts$",
+  "transform": {
+    "^.+\\.(t|j)s$": "ts-jest"
+  },
+  "transformIgnorePatterns": [
+    "node_modules/.pnpm/(?!(uuid@|socket\\.io|engine\\.io))"
+  ],
+  "moduleNameMapper": {
+    "^@signalapp/libsignal-client$": "<rootDir>/__mocks__/@signalapp/libsignal-client.js"
+  },
+  "setupFiles": ["./setup-e2e.ts"]
+}

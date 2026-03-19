@@ -1,0 +1,57 @@
+# compiled output
+/dist
+/node_modules
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+.env.selfhosted
+*.pem
+*.key
+/keys
+
+# Data
+sqlite-data
+data
+
+# Claude Code agent memory
+.claude/agent-memory/
+
+# Config files with secrets
+src/config-files/
+
+# Local development files
+docker-compose.tor.local.yml

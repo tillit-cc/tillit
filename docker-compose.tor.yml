@@ -1,0 +1,88 @@
+# TilliT Backend - Self-Hosted Deployment with Tor Hidden Service
+#
+# This configuration includes a Tor sidecar for anonymous access via .onion address.
+# No port forwarding, domain, or external account required.
+#
+# Security:
+#   - Port 3000 bound to localhost only (LAN health check, not exposed to internet)
+#   - Cloud worker / DDNS disabled to prevent clearnet IP leaks
+#   - tillit container on internal-only network (no direct internet access)
+#   - tor container bridges internal network ↔ Tor network
+#
+# Usage:
+#   1. Copy .env.selfhosted.sample to .env and configure
+#   2. docker compose -f docker-compose.tor.yml up -d
+#   3. Wait ~60 seconds for Tor bootstrap
+#   4. docker compose -f docker-compose.tor.yml exec tor cat /var/lib/tor/hidden_service/hostname
+#
+# For Raspberry Pi 4 / ARM64 devices
+
+services:
+  tillit:
+    image: ghcr.io/tillit-cc/tillit:latest
+    container_name: tillit
+    restart: unless-stopped
+    ports:
+      # Localhost only — for health checks and local access, NOT exposed to internet
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    environment:
+      - DEPLOYMENT_MODE=selfhosted
+      - NODE_ENV=production
+      - APP_PORT=3000
+      - SQLITE_DATA_DIR=/app/data
+      - KEYS_DIR=/app/keys
+      # Disable cloud services to prevent clearnet IP leaks
+      - CLOUD_WORKER_URL=
+      - DDNS_ENABLED=false
+    env_file:
+      - .env
+    volumes:
+      - tillit-data:/app/data
+      - tillit-keys:/app/keys
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      # Internal only — tillit cannot reach the internet directly
+      - tillit-internal
+
+  tor:
+    build:
+      context: .
+      dockerfile: Dockerfile.tor
+    container_name: tor
+    restart: unless-stopped
+    depends_on:
+      tillit:
+        condition: service_healthy
+    volumes:
+      - tor-data:/var/lib/tor/hidden_service
+    healthcheck:
+      test: ["CMD", "test", "-f", "/var/lib/tor/hidden_service/hostname"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    networks:
+      # Internal: to reach tillit:3000
+      - tillit-internal
+      # External: to reach Tor network
+      - tillit-egress
+
+volumes:
+  tillit-data:
+    name: tillit-data
+  tillit-keys:
+    name: tillit-keys
+  tor-data:
+    name: tillit-tor-data
+
+networks:
+  # Internal network — no internet access, only tillit ↔ tor communication
+  tillit-internal:
+    internal: true
+  # Egress network — tor container uses this to reach the Tor network
+  tillit-egress:

@@ -1,0 +1,27 @@
+# TilliT — Tor Hidden Service Sidecar
+#
+# Minimal Debian image with Tor, configured as a hidden service relay.
+# Maps .onion port 80 → tillit:3000 via Docker network.
+#
+# ARM64/AMD64 compatible (debian:bookworm-slim supports both).
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends tor && \
+    rm -rf /var/lib/apt/lists/*
+
+# Configure Tor as a hidden service relay (no SOCKS proxy)
+RUN mkdir -p /var/lib/tor/hidden_service && \
+    chown -R debian-tor:debian-tor /var/lib/tor/hidden_service && \
+    chmod 700 /var/lib/tor/hidden_service
+
+RUN echo "HiddenServiceDir /var/lib/tor/hidden_service/" > /etc/tor/torrc && \
+    echo "HiddenServicePort 80 tillit:3000" >> /etc/tor/torrc && \
+    echo "SocksPort 0" >> /etc/tor/torrc && \
+    echo "ExitRelay 0" >> /etc/tor/torrc && \
+    echo "ExitPolicy reject *:*" >> /etc/tor/torrc
+
+USER debian-tor
+
+ENTRYPOINT ["tor", "-f", "/etc/tor/torrc"]

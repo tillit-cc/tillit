@@ -1,0 +1,139 @@
+{
+  "name": "tillit",
+  "version": "0.0.15",
+  "description": "End-to-end encrypted chat backend with Signal Protocol — self-hosted privacy server",
+  "author": "TilliT Contributors",
+  "private": false,
+  "license": "AGPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tillit-cc/tillit.git"
+  },
+  "homepage": "https://github.com/tillit-cc/tillit#readme",
+  "bugs": {
+    "url": "https://github.com/tillit-cc/tillit/issues"
+  },
+  "scripts": {
+    "build": "nest build",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main",
+    "start:cloud": "DEPLOYMENT_MODE=cloud nest start",
+    "start:cloud:dev": "DEPLOYMENT_MODE=cloud nest start --watch",
+    "start:cloud:prod": "DEPLOYMENT_MODE=cloud node dist/main",
+    "start:selfhosted": "DEPLOYMENT_MODE=selfhosted nest start",
+    "start:selfhosted:dev": "DEPLOYMENT_MODE=selfhosted nest start --watch",
+    "start:selfhosted:prod": "DEPLOYMENT_MODE=selfhosted node dist/main",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "typeorm": "typeorm-ts-node-commonjs",
+    "migration:run": "pnpm typeorm migration:run -d src/database/data-source.ts",
+    "migration:run:cloud": "DEPLOYMENT_MODE=cloud pnpm typeorm migration:run -d src/database/data-source.ts",
+    "migration:run:selfhosted": "DEPLOYMENT_MODE=selfhosted pnpm typeorm migration:run -d src/database/data-source.ts",
+    "migration:revert": "pnpm typeorm migration:revert -d src/database/data-source.ts",
+    "migration:show": "pnpm typeorm migration:show -d src/database/data-source.ts",
+    "migration:generate": "pnpm typeorm migration:generate -d src/database/data-source.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.11",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.1.11",
+    "@nestjs/jwt": "^11.0.2",
+    "@nestjs/passport": "^11.0.5",
+    "@nestjs/platform-express": "^11.1.11",
+    "@nestjs/platform-socket.io": "^11.1.11",
+    "@nestjs/throttler": "^6.5.0",
+    "@nestjs/typeorm": "^11.0.0",
+    "@nestjs/websockets": "^11.1.11",
+    "@signalapp/libsignal-client": "^0.86.11",
+    "@socket.io/redis-adapter": "^8.3.0",
+    "better-sqlite3": "^11.8.1",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.3",
+    "dotenv": "^17.2.3",
+    "expo-server-sdk": "^4.0.0",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.8.2",
+    "joi": "^18.0.2",
+    "mysql": "^2.18.1",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "redis": "^5.10.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "socket.io": "^4.8.3",
+    "typeorm": "^0.3.28",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@nestjs/cli": "^11.0.14",
+    "@nestjs/schematics": "^11.0.9",
+    "@nestjs/testing": "^11.1.11",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.6",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^25.0.3",
+    "@types/passport-jwt": "^4.0.1",
+    "@types/supertest": "^6.0.3",
+    "@types/uuid": "^11.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.51.0",
+    "@typescript-eslint/parser": "^8.51.0",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.4",
+    "globals": "^17.3.0",
+    "jest": "^30.2.0",
+    "prettier": "^3.7.4",
+    "socket.io-client": "^4.8.3",
+    "source-map-support": "^0.5.21",
+    "supertest": "^7.1.4",
+    "ts-jest": "^29.4.6",
+    "ts-loader": "^9.5.4",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.55.0"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "transformIgnorePatterns": [
+      "node_modules/.pnpm/(?!(uuid|@socket\\.io|engine\\.io|socket\\.io|socket\\.io-client|socket\\.io-adapter|socket\\.io-parser|engine\\.io-client|engine\\.io-parser)@)"
+    ],
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@nestjs/core",
+      "@signalapp/libsignal-client",
+      "better-sqlite3"
+    ],
+    "ignoredBuiltDependencies": [
+      "unrs-resolver"
+    ],
+    "overrides": {
+      "multer": ">=2.1.0",
+      "minimatch": ">=10.2.3"
+    }
+  }
+}

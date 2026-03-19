@@ -1,0 +1,41 @@
+# TilliT Backend - Self-Hosted Deployment
+#
+# Usage:
+#   1. Copy .env.selfhosted.sample to .env and configure
+#   2. docker compose -f docker-compose.selfhosted.yml up -d
+#
+# For Raspberry Pi 4 / ARM64 devices
+
+services:
+  tillit:
+    image: ghcr.io/tillit-cc/tillit:latest
+    container_name: tillit
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      - DEPLOYMENT_MODE=selfhosted
+      - NODE_ENV=production
+      - APP_PORT=3000
+      - SQLITE_DATA_DIR=/app/data
+      - KEYS_DIR=/app/keys
+      - CLOUD_WORKER_URL=https://worker.tillit.cc
+    env_file:
+      - .env
+    volumes:
+      # Persistent storage for SQLite database
+      - tillit-data:/app/data
+      # Persistent storage for RSA keys (auto-generated on first run)
+      - tillit-keys:/app/keys
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  tillit-data:
+    name: tillit-data
+  tillit-keys:
+    name: tillit-keys

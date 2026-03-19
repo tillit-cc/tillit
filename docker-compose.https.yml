@@ -1,0 +1,85 @@
+# TilliT Backend - Self-Hosted Deployment with HTTPS
+#
+# This configuration includes Caddy as a reverse proxy with automatic
+# Let's Encrypt certificates using DNS-01 challenge via the cloud worker's
+# ACME-DNS compatible API.
+#
+# Usage:
+#   1. Copy .env.selfhosted.sample to .env and configure
+#   2. Enable DDNS (required for HTTPS)
+#   3. docker compose -f docker-compose.https.yml up -d
+#
+# For Raspberry Pi 4 / ARM64 devices
+
+services:
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    container_name: tillit-caddy
+    restart: unless-stopped
+    ports:
+      - "${HTTPS_PORT:-443}:${HTTPS_PORT:-443}"
+      - "${HTTP_PORT:-80}:${HTTP_PORT:-80}"
+    environment:
+      # Domain configuration
+      - DOMAIN=${DOMAIN:-${CLOUD_ID}.tillit.cc}
+      - HTTPS_PORT=${HTTPS_PORT:-443}
+      - HTTP_PORT=${HTTP_PORT:-80}
+      # ACME-DNS configuration (uses cloud worker credentials)
+      - ACMEDNS_SERVER=${CLOUD_WORKER_URL:-https://worker.tillit.cc}/acmedns
+      - ACMEDNS_USERNAME=${CLOUD_ID}
+      - ACMEDNS_PASSWORD=${CLOUD_TOKEN}
+      - ACMEDNS_SUBDOMAIN=${CLOUD_ID}
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      tillit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${HTTP_PORT:-80}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  tillit:
+    image: ghcr.io/tillit-cc/tillit:latest
+    container_name: tillit
+    restart: unless-stopped
+    # Not exposed externally - only via Caddy
+    expose:
+      - "3000"
+    environment:
+      - DEPLOYMENT_MODE=selfhosted
+      - NODE_ENV=production
+      - APP_PORT=3000
+      - SQLITE_DATA_DIR=/app/data
+      - KEYS_DIR=/app/keys
+      - CLOUD_WORKER_URL=${CLOUD_WORKER_URL:-https://worker.tillit.cc}
+      # Domain for Caddy on-demand TLS validation
+      - DOMAIN=${DOMAIN:-${CLOUD_ID}.tillit.cc}
+    env_file:
+      - .env
+    volumes:
+      # Persistent storage for SQLite database
+      - tillit-data:/app/data
+      # Persistent storage for RSA keys (auto-generated on first run)
+      - tillit-keys:/app/keys
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  tillit-data:
+    name: tillit-data
+  tillit-keys:
+    name: tillit-keys
+  caddy-data:
+    name: tillit-caddy-data
+  caddy-config:
+    name: tillit-caddy-config

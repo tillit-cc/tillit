@@ -1,0 +1,33 @@
+# TilliT Self-Hosted - Custom Caddy Image
+#
+# Builds Caddy with the acmedns DNS provider for ACME DNS-01 challenges.
+# Uses the official caddy-dns/acmedns module.
+#
+# Build:
+#   docker build -f Dockerfile.caddy -t tillit-caddy .
+#
+# This image is built locally as part of docker-compose.https.yml
+
+# Stage 1: Build Caddy with acmedns module
+FROM caddy:2-builder AS builder
+
+RUN xcaddy build \
+    --with github.com/caddy-dns/acmedns
+
+# Stage 2: Runtime image
+FROM caddy:2-alpine
+
+# Copy custom Caddy binary with acmedns support
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+
+# Copy Caddyfile
+COPY Caddyfile /etc/caddy/Caddyfile
+
+# Verify Caddy works and has the module
+RUN caddy version && caddy list-modules | grep acmedns
+
+# Expose ports (actual ports configured via environment)
+EXPOSE 80 443
+
+# Run Caddy
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

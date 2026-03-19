@@ -1,0 +1,57 @@
+# TilliT Chat Server - Systemd Service (Bare-Metal)
+#
+# Install location: /etc/systemd/system/tillit.service
+#
+# Usage:
+#   sudo systemctl enable tillit
+#   sudo systemctl start tillit
+#   sudo systemctl status tillit
+#   journalctl -u tillit -f
+#
+
+[Unit]
+Description=TilliT Chat Server
+Documentation=https://github.com/tillit-cc/tillit
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tillit
+Group=tillit
+WorkingDirectory=/opt/tillit
+EnvironmentFile=/opt/tillit/.env
+Environment=DEPLOYMENT_MODE=selfhosted
+Environment=NODE_ENV=production
+Environment=SQLITE_DATA_DIR=/opt/tillit/data
+Environment=KEYS_DIR=/opt/tillit/keys
+Environment=PRIVATE_KEY_PATH=/opt/tillit/keys/private.pem
+Environment=PUBLIC_KEY_PATH=/opt/tillit/keys/public.pem
+ExecStart=/usr/bin/node /opt/tillit/dist/main.js
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tillit
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tillit/data /opt/tillit/keys
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+# Resource limits (adjust for your hardware)
+MemoryMax=512M
+TasksMax=100
+
+[Install]
+WantedBy=multi-user.target

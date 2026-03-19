@@ -1,0 +1,63 @@
+# TilliT Backend - Self-Hosted Deployment with Cloudflare Tunnel
+#
+# This configuration includes cloudflared as a sidecar for secure tunneling
+# without port forwarding or certificate management.
+#
+# Usage:
+#   1. Create a tunnel in Cloudflare Zero Trust dashboard
+#   2. Copy the tunnel token
+#   3. Set CLOUDFLARE_TUNNEL_TOKEN in .env
+#   4. Configure Public Hostname in dashboard: your-domain → http://tillit:3000
+#   5. docker compose -f docker-compose.tunnel.yml up -d
+#
+# For Raspberry Pi 4 / ARM64 devices
+
+services:
+  tillit:
+    image: ghcr.io/tillit-cc/tillit:latest
+    container_name: tillit
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      - DEPLOYMENT_MODE=selfhosted
+      - NODE_ENV=production
+      - APP_PORT=3000
+      - SQLITE_DATA_DIR=/app/data
+      - KEYS_DIR=/app/keys
+      - CLOUD_WORKER_URL=${CLOUD_WORKER_URL:-https://worker.tillit.cc}
+    env_file:
+      - .env
+    volumes:
+      - tillit-data:/app/data
+      - tillit-keys:/app/keys
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - tillit-net
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      tillit:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - tillit-net
+
+volumes:
+  tillit-data:
+    name: tillit-data
+  tillit-keys:
+    name: tillit-keys
+
+networks:
+  tillit-net:

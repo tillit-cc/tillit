@@ -1,0 +1,35 @@
+# TilliT Chat Server - Systemd Service (Docker Compose)
+#
+# Install location: /etc/systemd/system/tillit.service
+#
+# This service manages TilliT running in Docker Compose.
+# Use this if you installed TilliT via install.sh (Docker method).
+#
+# Usage:
+#   sudo systemctl enable tillit
+#   sudo systemctl start tillit
+#   sudo systemctl status tillit
+#   docker compose -f /opt/tillit/docker-compose.selfhosted.yml logs -f
+#
+
+[Unit]
+Description=TilliT Chat Server (Docker)
+Documentation=https://github.com/tillit-cc/tillit
+After=network-online.target docker.service
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/tillit
+ExecStart=/usr/bin/docker compose -f docker-compose.selfhosted.yml up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.selfhosted.yml down
+ExecReload=/usr/bin/docker compose -f docker-compose.selfhosted.yml restart
+
+# Timeouts
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
