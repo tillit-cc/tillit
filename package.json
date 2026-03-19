@@ -1,6 +1,6 @@
 {
   "name": "tillit",
-  "version": "0.0.15",
+  "version": "0.5.0",
   "description": "End-to-end encrypted chat backend with Signal Protocol — self-hosted privacy server",
   "author": "TilliT Contributors",
   "private": false,
