@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="TilliT" width="120" />
+  <img src="https://raw.githubusercontent.com/tillit-cc/.github/main/profile/logo.png" alt="TilliT" width="120" />
 </p>
 
 <h1 align="center">TilliT Backend</h1>
