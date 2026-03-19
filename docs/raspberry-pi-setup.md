@@ -66,7 +66,16 @@ The Pi will:
 
 ### 5. Connect
 
-Open the TilliT app and connect to:
+**Tor mode (default):** SSH into the Pi to get your `.onion` address:
+
+```bash
+ssh <username>@<hostname>.local
+tillit onion
+```
+
+Open the TilliT app and connect using the `.onion` address. The app has built-in Tor support — no extra setup needed.
+
+**HTTP / Tunnel mode:** Open the TilliT app and connect to:
 
 ```
 http://<hostname>.local:3000
@@ -84,7 +93,7 @@ During `rpi-setup.sh`, you can configure:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| Network Mode | HTTP | HTTP only (local network) or Cloudflare Tunnel (remote access) |
+| Network Mode | Tor | Tor hidden service (recommended), Cloudflare Tunnel, or HTTP only |
 | Cloudflare Tunnel | disabled | Provide a tunnel token for secure remote access without port forwarding |
 | TilliT Cloud | disabled | DDNS (`your-id.tillit.cc`) and push notification relay |
 | DDNS | disabled | Automatic domain registration (requires TilliT Cloud) |
@@ -295,6 +304,7 @@ Open `firstrun.sh` in a text editor like Notepad++. **Before** the line `rm -f /
 │    └─ Installs Docker                                 │
 │    └─ Downloads docker-compose + .env                 │
 │    └─ Starts TilliT containers                        │
+│    └─ Tor mode: waits for .onion address generation   │
 │    └─ Installs tillit CLI                             │
 │    └─ Disables itself (one-shot)                      │
 └─────────────────────────────────────────────────────┘

@@ -13,9 +13,7 @@
 
 services:
   caddy:
-    build:
-      context: .
-      dockerfile: Dockerfile.caddy
+    image: ghcr.io/tillit-cc/tillit-caddy:latest
     container_name: tillit-caddy
     restart: unless-stopped
     ports:

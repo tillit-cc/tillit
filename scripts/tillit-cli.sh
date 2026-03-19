@@ -75,7 +75,11 @@ detect_install_dir() {
         echo "    - ~/tillit"
         echo ""
         echo "  Install TilliT first:"
-        echo "    curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh | sudo bash"
+        if [ "$IS_MACOS" = true ]; then
+            echo "    curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh | bash"
+        else
+            echo "    curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh | sudo bash"
+        fi
         exit 1
     fi
 }
@@ -287,7 +291,7 @@ is_service_running() {
     if [ "$DEPLOY_MODE" = "docker" ]; then
         local compose_file
         compose_file=$(find_compose_file) || return 1
-        cd "$INSTALL_DIR" && docker compose -f "$compose_file" ps --status running 2>/dev/null | grep -q "tillit" && return 0
+        docker ps --filter name=tillit --filter status=running --format '{{.Names}}' 2>/dev/null | grep -q "tillit" && return 0
         return 1
     elif [ "$IS_LINUX" = true ]; then
         systemctl is-active --quiet tillit 2>/dev/null
@@ -1253,7 +1257,7 @@ main() {
             ;;
         ""|help|--help|-h)
             # Try to detect for help display, but don't fail
-            detect_install_dir 2>/dev/null || INSTALL_DIR="/opt/tillit"
+            detect_install_dir 2>/dev/null || INSTALL_DIR="${HOME}/tillit"
             detect_deploy_mode "false"
             cmd_help
             exit 0

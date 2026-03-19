@@ -10,6 +10,12 @@
 #
 set -e
 
+# When piped via curl | bash, stdin is the script itself, not the terminal.
+# Reopen stdin from /dev/tty so interactive read prompts work.
+if [ ! -t 0 ] && [ -e /dev/tty ]; then
+    exec < /dev/tty
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -131,7 +137,8 @@ check_root() {
         # macOS: running as current user is fine
         log_info "macOS detected — running as user $(whoami)"
     elif [ "$(id -u)" -ne 0 ]; then
-        log_error "This script must be run as root (use sudo)"
+        log_error "This script requires root on Linux. Re-run with:"
+        echo "  sudo bash $0"
         exit 1
     fi
 }

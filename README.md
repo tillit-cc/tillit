@@ -70,8 +70,11 @@ The mobile app source code and public store releases are coming soon.
 ### Docker (recommended)
 
 ```bash
-# One-liner installation
+# Linux / Raspberry Pi
 curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh | sudo bash
+
+# macOS (no sudo needed — Docker Desktop runs as current user)
+curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh | bash
 ```
 
 Or manually:
@@ -158,7 +161,8 @@ Or via the interactive installer:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh | sudo bash
-# Select option 4: Tor Hidden Service
+# Select option 1: Tor Hidden Service (default)
+# On macOS: omit sudo
 ```
 
 **How it works:**

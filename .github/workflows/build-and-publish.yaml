@@ -56,3 +56,36 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Check if Caddy files changed
+        id: caddy-changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            caddy:
+              - 'Dockerfile.caddy'
+              - 'Caddyfile'
+
+      - name: Extract metadata for Caddy
+        if: steps.caddy-changes.outputs.caddy == 'true' || startsWith(github.ref, 'refs/tags/v')
+        id: meta-caddy
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-caddy
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+
+      - name: Build and push Caddy image
+        if: steps.caddy-changes.outputs.caddy == 'true' || startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.caddy
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-caddy.outputs.tags }}
+          labels: ${{ steps.meta-caddy.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -31,6 +31,12 @@
 #
 set -e
 
+# When piped via curl | bash, stdin is the script itself, not the terminal.
+# Reopen stdin from /dev/tty so interactive read prompts work.
+if [ ! -t 0 ] && [ -e /dev/tty ]; then
+    exec < /dev/tty
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
