@@ -87,6 +87,7 @@ services:
       - MDNS_ONION_FILE=/onion/hostname
     volumes:
       - tor-data:/onion:ro
+      - /etc/avahi/services:/host-avahi-services
     depends_on:
       tillit:
         condition: service_healthy

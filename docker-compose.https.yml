@@ -85,6 +85,8 @@ services:
       - MDNS_PROTOCOL=https
       - MDNS_VERSION=0.5.0
       - MDNS_HOST=${DOMAIN:-${CLOUD_ID}.tillit.cc}
+    volumes:
+      - /etc/avahi/services:/host-avahi-services
     depends_on:
       tillit:
         condition: service_healthy
