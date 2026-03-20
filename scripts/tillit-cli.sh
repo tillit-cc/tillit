@@ -453,7 +453,7 @@ cmd_status() {
         local onion_addr
         onion_addr=$(get_onion_address) || true
         if [ -n "$onion_addr" ]; then
-            echo -e "  Onion URL:   ${GREEN}http://$onion_addr${NC}"
+            echo -e "  Onion URL:   ${GREEN}$onion_addr${NC}"
         else
             echo -e "  Onion URL:   ${YELLOW}pending (Tor bootstrapping)${NC}"
         fi
@@ -1165,7 +1165,7 @@ cmd_onion() {
     if [ -n "$addr" ]; then
         echo ""
         echo -e "  ${BOLD}Onion Address${NC}"
-        echo -e "  http://$addr"
+        echo -e "  $addr"
         echo ""
     else
         echo -e "${YELLOW}Onion address not available yet — Tor may still be bootstrapping.${NC}"
