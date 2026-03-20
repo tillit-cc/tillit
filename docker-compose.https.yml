@@ -72,6 +72,23 @@ services:
       retries: 3
       start_period: 15s
 
+  mdns:
+    build:
+      context: .
+      dockerfile: Dockerfile.mdns
+    container_name: tillit-mdns
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - MDNS_NAME=TilliT
+      - MDNS_PORT=${HTTPS_PORT:-443}
+      - MDNS_PROTOCOL=https
+      - MDNS_VERSION=0.5.0
+      - MDNS_HOST=${DOMAIN:-${CLOUD_ID}.tillit.cc}
+    depends_on:
+      tillit:
+        condition: service_healthy
+
 volumes:
   tillit-data:
     name: tillit-data

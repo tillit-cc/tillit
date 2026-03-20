@@ -459,6 +459,24 @@ cmd_status() {
         fi
     fi
 
+    # mDNS status
+    local mdns_active=false
+    if [ "$DEPLOY_MODE" = "docker" ]; then
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "tillit-mdns"; then
+            mdns_active=true
+        fi
+    else
+        if [ -f "/etc/avahi/services/tillit.service" ] && command -v avahi-daemon &>/dev/null; then
+            mdns_active=true
+        elif launchctl list cc.tillit.mdns &>/dev/null 2>&1; then
+            mdns_active=true
+        fi
+    fi
+
+    if [ "$mdns_active" = "true" ]; then
+        echo -e "  mDNS:        ${GREEN}broadcasting _tillit._tcp${NC}"
+    fi
+
     echo ""
 }
 

@@ -337,6 +337,17 @@ download_files() {
         COMPOSE_FILE="docker-compose.yml"
     fi
 
+    # Download mDNS sidecar files (used by all compose modes)
+    log_info "Downloading mDNS Dockerfile..."
+    curl_auth -fsSL "$REPO_RAW/Dockerfile.mdns" -o "Dockerfile.mdns"
+    log_success "Downloaded Dockerfile.mdns"
+
+    mkdir -p "$INSTALL_DIR/scripts"
+    log_info "Downloading mDNS entrypoint..."
+    curl_auth -fsSL "$REPO_RAW/scripts/mdns-entrypoint.sh" -o "scripts/mdns-entrypoint.sh"
+    chmod +x "scripts/mdns-entrypoint.sh"
+    log_success "Downloaded mdns-entrypoint.sh"
+
     log_info "Downloading environment sample..."
     curl_auth -fsSL "$REPO_RAW/$ENV_SAMPLE" -o "$ENV_SAMPLE"
     log_success "Downloaded $ENV_SAMPLE"

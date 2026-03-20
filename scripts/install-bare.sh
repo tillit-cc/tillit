@@ -1127,6 +1127,43 @@ print_summary() {
     echo ""
 }
 
+setup_mdns() {
+    log_info "Setting up mDNS service discovery..."
+
+    # Source the mDNS helper
+    local mdns_script="$INSTALL_DIR/scripts/tillit-mdns.sh"
+    if [ ! -f "$mdns_script" ]; then
+        # Download if not present (bare-metal from source should have it)
+        curl -fsSL "$REPO_RAW/scripts/tillit-mdns.sh" -o "$mdns_script" 2>/dev/null || true
+    fi
+
+    if [ ! -f "$mdns_script" ]; then
+        log_warning "mDNS helper not found — skipping mDNS setup"
+        return 0
+    fi
+
+    chmod +x "$mdns_script"
+    # shellcheck source=/dev/null
+    . "$mdns_script"
+
+    local protocol="http"
+    local onion=""
+    local host=""
+
+    if [ "$ENABLE_TOR" = true ] && [ -n "${ONION_ADDRESS:-}" ]; then
+        onion="$ONION_ADDRESS"
+    fi
+
+    setup_mdns_service "$APP_PORT" "$protocol" "0.5.0" "$onion" "$host"
+
+    # On macOS, install launchd for persistence
+    if [ "$IS_MACOS" = true ]; then
+        install_mdns_launchd "$APP_PORT" "$protocol" "0.5.0" "$onion" "$host"
+    fi
+
+    log_success "mDNS broadcasting _tillit._tcp on port $APP_PORT"
+}
+
 # Main installation flow
 main() {
     print_banner
@@ -1158,6 +1195,9 @@ main() {
             setup_named_tunnel
         fi
     fi
+
+    # Setup mDNS service discovery
+    setup_mdns
 
     install_cli
     print_summary

@@ -72,6 +72,25 @@ services:
       # External: to reach Tor network
       - tillit-egress
 
+  mdns:
+    build:
+      context: .
+      dockerfile: Dockerfile.mdns
+    container_name: tillit-mdns
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - MDNS_NAME=TilliT
+      - MDNS_PORT=${APP_PORT:-3000}
+      - MDNS_PROTOCOL=http
+      - MDNS_VERSION=0.5.0
+      - MDNS_ONION_FILE=/onion/hostname
+    volumes:
+      - tor-data:/onion:ro
+    depends_on:
+      tillit:
+        condition: service_healthy
+
 volumes:
   tillit-data:
     name: tillit-data

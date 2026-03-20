@@ -127,6 +127,15 @@ download_compose() {
         curl -fsSL "$REPO_RAW/docker-compose.selfhosted.yml" -o "docker-compose.yml"
     fi
     log "Docker Compose file downloaded"
+
+    # Download mDNS sidecar files (used by all compose modes)
+    log "Downloading Dockerfile.mdns..."
+    curl -fsSL "$REPO_RAW/Dockerfile.mdns" -o "Dockerfile.mdns"
+    mkdir -p "$INSTALL_DIR/scripts"
+    log "Downloading mdns-entrypoint.sh..."
+    curl -fsSL "$REPO_RAW/scripts/mdns-entrypoint.sh" -o "scripts/mdns-entrypoint.sh"
+    chmod +x "scripts/mdns-entrypoint.sh"
+    log "mDNS files downloaded"
 }
 
 download_env() {
