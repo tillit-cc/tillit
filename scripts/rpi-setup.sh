@@ -18,6 +18,12 @@
 #
 set -euo pipefail
 
+# When piped via curl | bash, stdin is the script itself, not the terminal.
+# Reopen stdin from /dev/tty so interactive read prompts work.
+if [ ! -t 0 ] && [ -e /dev/tty ]; then
+    exec < /dev/tty
+fi
+
 # ── Colors ───────────────────────────────────────────────────────────────────
 
 RED='\033[0;31m'
@@ -30,7 +36,7 @@ NC='\033[0m'
 # ── Configuration ────────────────────────────────────────────────────────────
 
 REPO_RAW="https://raw.githubusercontent.com/tillit-cc/tillit/main"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd 2>/dev/null)" || SCRIPT_DIR="."
 FIRSTBOOT_SCRIPT="tillit-firstboot.sh"
 FIRSTBOOT_ENV="tillit-firstboot.env"
 
