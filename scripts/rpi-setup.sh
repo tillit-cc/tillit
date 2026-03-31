@@ -166,7 +166,7 @@ configure_tillit() {
 
     echo ""
     echo -e "${CYAN}╔═══════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║          TilliT Configuration              ║${NC}"
+    echo -e "${CYAN}║          TilliT Configuration             ║${NC}"
     echo -e "${CYAN}╚═══════════════════════════════════════════╝${NC}"
     echo ""
     echo "  Configure TilliT settings (press Enter to accept defaults)."
