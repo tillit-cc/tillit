@@ -31,12 +31,6 @@
 #
 set -e
 
-# When piped via curl | bash, stdin is the script itself, not the terminal.
-# Reopen stdin from /dev/tty so interactive read prompts work.
-if [ ! -t 0 ] && [ -e /dev/tty ]; then
-    exec < /dev/tty
-fi
-
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -369,7 +363,7 @@ configure_cloud_services() {
         echo ""
         cloud_enabled=true
     else
-        read -p "Enable TilliT Cloud services? (y/N): " enable_cloud_input
+        read -p "Enable TilliT Cloud services? (y/N): " enable_cloud_input < /dev/tty
         if [ "$enable_cloud_input" = "y" ] || [ "$enable_cloud_input" = "Y" ]; then
             cloud_enabled=true
         else
@@ -379,8 +373,8 @@ configure_cloud_services() {
 
     if [ "$cloud_enabled" = true ]; then
         echo ""
-        read -p "  Cloud ID (e.g., my-home-server): " CLOUD_ID
-        read -p "  Cloud Token: " CLOUD_TOKEN
+        read -p "  Cloud ID (e.g., my-home-server): " CLOUD_ID < /dev/tty
+        read -p "  Cloud Token: " CLOUD_TOKEN < /dev/tty
         echo ""
 
         # DDNS sub-option
@@ -392,7 +386,7 @@ configure_cloud_services() {
                 echo -e "  Domain set to: ${GREEN}$DOMAIN${NC}"
             fi
         else
-            read -p "  Enable DDNS (automatic domain ${CLOUD_ID}.tillit.cc)? (Y/n): " enable_ddns_input
+            read -p "  Enable DDNS (automatic domain ${CLOUD_ID}.tillit.cc)? (Y/n): " enable_ddns_input < /dev/tty
             enable_ddns_input=${enable_ddns_input:-Y}
             if [ "$enable_ddns_input" = "n" ] || [ "$enable_ddns_input" = "N" ]; then
                 DDNS_ENABLED=false
@@ -407,7 +401,7 @@ configure_cloud_services() {
         echo "    1) Privacy mode — generic \"New message\" (no metadata sent)"
         echo "    2) Detailed mode — include room/sender info (for quick navigation)"
         echo ""
-        read -p "  Choose [1]: " push_data_option
+        read -p "  Choose [1]: " push_data_option < /dev/tty
         push_data_option=${push_data_option:-1}
 
         if [ "$push_data_option" = "2" ]; then
@@ -451,7 +445,7 @@ configure_network() {
     echo -e "     or if you have your own reverse proxy / VPN."
     echo ""
 
-    read -p "  Select option [1]: " network_option
+    read -p "  Select option [1]: " network_option < /dev/tty
     network_option=${network_option:-1}
 
     case "$network_option" in
@@ -472,7 +466,7 @@ configure_network() {
             echo -e "  ${DIM}  Client ──HTTPS──→ :HTTPS_PORT ──→ Caddy ──→ TilliT :3000${NC}"
             echo ""
 
-            read -p "  HTTPS_PORT (public, clients connect here) [443]: " https_port_input
+            read -p "  HTTPS_PORT (public, clients connect here) [443]: " https_port_input < /dev/tty
             HTTPS_PORT=${https_port_input:-443}
 
             echo ""
@@ -481,7 +475,7 @@ configure_network() {
         4)
             ENABLE_HTTPS=false
 
-            read -p "  HTTP port [3000]: " http_port_input
+            read -p "  HTTP port [3000]: " http_port_input < /dev/tty
             APP_PORT=${http_port_input:-3000}
 
             log_success "HTTP enabled on port $APP_PORT"
@@ -510,7 +504,7 @@ configure_tunnel_mode() {
     echo "  3) I already have a tunnel token"
     echo ""
 
-    read -p "Select option [1]: " tunnel_option
+    read -p "Select option [1]: " tunnel_option < /dev/tty
     tunnel_option=${tunnel_option:-1}
 
     case "$tunnel_option" in
@@ -520,7 +514,7 @@ configure_tunnel_mode() {
         3)
             TUNNEL_MODE="token"
             echo ""
-            read -p "Enter your Cloudflare Tunnel token: " TUNNEL_TOKEN
+            read -p "Enter your Cloudflare Tunnel token: " TUNNEL_TOKEN < /dev/tty
             if [ -z "$TUNNEL_TOKEN" ]; then
                 log_error "Tunnel token is required"
                 exit 1
@@ -605,18 +599,18 @@ setup_named_tunnel() {
     if [ -z "$tunnel_id" ]; then
         log_warning "Could not extract tunnel ID. The tunnel may already exist."
         echo ""
-        read -p "Enter your tunnel ID (or press Enter to list tunnels): " tunnel_id
+        read -p "Enter your tunnel ID (or press Enter to list tunnels): " tunnel_id < /dev/tty
         if [ -z "$tunnel_id" ]; then
             cloudflared tunnel list
             echo ""
-            read -p "Enter tunnel ID from the list above: " tunnel_id
+            read -p "Enter tunnel ID from the list above: " tunnel_id < /dev/tty
         fi
     fi
 
     # Step 3: Route DNS
     echo ""
     echo -e "${YELLOW}Step 3: Configure DNS route${NC}"
-    read -p "Enter your domain (e.g., chat.yourdomain.com): " tunnel_domain
+    read -p "Enter your domain (e.g., chat.yourdomain.com): " tunnel_domain < /dev/tty
 
     if [ -n "$tunnel_domain" ]; then
         cloudflared tunnel route dns tillit "$tunnel_domain"
@@ -787,7 +781,7 @@ configure_env() {
         echo "  1) Keep existing configuration"
         echo "  2) Create new configuration (backup old as .env.backup)"
         echo ""
-        read -p "Select option [1]: " config_option
+        read -p "Select option [1]: " config_option < /dev/tty
         config_option=${config_option:-1}
 
         if [ "$config_option" = "2" ]; then
@@ -1156,7 +1150,7 @@ print_summary() {
         esac
 
         echo -e "  ${YELLOW}The tillit command is not in your PATH.${NC}"
-        read -p "  Add ~/.local/bin to PATH in ~/$rc_file? (Y/n): " add_path_input
+        read -p "  Add ~/.local/bin to PATH in ~/$rc_file? (Y/n): " add_path_input < /dev/tty
         add_path_input=${add_path_input:-Y}
 
         if [ "$add_path_input" != "n" ] && [ "$add_path_input" != "N" ]; then

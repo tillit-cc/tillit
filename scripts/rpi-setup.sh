@@ -18,12 +18,6 @@
 #
 set -euo pipefail
 
-# When piped via curl | bash, stdin is the script itself, not the terminal.
-# Reopen stdin from /dev/tty so interactive read prompts work.
-if [ ! -t 0 ] && [ -e /dev/tty ]; then
-    exec < /dev/tty
-fi
-
 # ── Colors ───────────────────────────────────────────────────────────────────
 
 RED='\033[0;31m'
@@ -107,7 +101,7 @@ detect_boot_partition() {
         echo "  Make sure the SD card is inserted and mounted."
         echo "  The boot partition should contain cmdline.txt and config.txt."
         echo ""
-        read -rp "  Enter the path to the boot partition: " boot_path
+        read -rp "  Enter the path to the boot partition: " boot_path < /dev/tty
 
         if [ -z "$boot_path" ]; then
             log_error "No path provided. Exiting."
@@ -184,7 +178,7 @@ configure_tillit() {
     echo "    2) Cloudflare Tunnel (access from anywhere, no port forwarding)"
     echo "    3) HTTP only (access via local network)"
     echo ""
-    read -rp "  Select [1]: " network_choice
+    read -rp "  Select [1]: " network_choice < /dev/tty
     network_choice=${network_choice:-1}
 
     local network_mode="http"
@@ -204,7 +198,7 @@ configure_tillit() {
         echo "       (the long string after --token)"
         echo -e "    5. Configure Public Hostname: your domain ${DIM}→${NC} http://localhost:3000"
         echo ""
-        read -rp "  Cloudflare Tunnel token: " tunnel_token
+        read -rp "  Cloudflare Tunnel token: " tunnel_token < /dev/tty
         if [ -z "$tunnel_token" ]; then
             log_warning "No tunnel token provided — falling back to HTTP mode"
             network_mode="http"
@@ -222,7 +216,7 @@ configure_tillit() {
     echo -e "  ${CYAN}TilliT Cloud Services (optional):${NC}"
     echo "    Provides DDNS (your-id.tillit.cc) and push notification relay."
     echo ""
-    read -rp "  Enable TilliT Cloud? (y/N): " enable_cloud
+    read -rp "  Enable TilliT Cloud? (y/N): " enable_cloud < /dev/tty
     enable_cloud=${enable_cloud:-N}
 
     local cloud_id=""
@@ -231,12 +225,12 @@ configure_tillit() {
     local push_include_data="false"
 
     if [ "$enable_cloud" = "y" ] || [ "$enable_cloud" = "Y" ]; then
-        read -rp "  Cloud ID (e.g., my-home-server): " cloud_id
-        read -rp "  Cloud Token: " cloud_token
+        read -rp "  Cloud ID (e.g., my-home-server): " cloud_id < /dev/tty
+        read -rp "  Cloud Token: " cloud_token < /dev/tty
 
         if [ -n "$cloud_id" ] && [ -n "$cloud_token" ]; then
             echo ""
-            read -rp "  Enable DDNS (${cloud_id}.tillit.cc)? (Y/n): " enable_ddns
+            read -rp "  Enable DDNS (${cloud_id}.tillit.cc)? (Y/n): " enable_ddns < /dev/tty
             enable_ddns=${enable_ddns:-Y}
             if [ "$enable_ddns" != "n" ] && [ "$enable_ddns" != "N" ]; then
                 ddns_enabled="true"
@@ -246,7 +240,7 @@ configure_tillit() {
             echo "  Push notification mode:"
             echo "    1) Privacy mode — generic \"New message\" (default)"
             echo "    2) Detailed mode — includes room/sender info"
-            read -rp "  Choose [1]: " push_choice
+            read -rp "  Choose [1]: " push_choice < /dev/tty
             push_choice=${push_choice:-1}
             if [ "$push_choice" = "2" ]; then
                 push_include_data="true"
