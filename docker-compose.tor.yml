@@ -50,9 +50,7 @@ services:
       - tillit-internal
 
   tor:
-    build:
-      context: .
-      dockerfile: Dockerfile.tor
+    image: ghcr.io/tillit-cc/tillit-tor:latest
     container_name: tor
     restart: unless-stopped
     depends_on:
@@ -73,9 +71,7 @@ services:
       - tillit-egress
 
   mdns:
-    build:
-      context: .
-      dockerfile: Dockerfile.mdns
+    image: ghcr.io/tillit-cc/tillit-mdns:latest
     container_name: tillit-mdns
     restart: unless-stopped
     network_mode: host

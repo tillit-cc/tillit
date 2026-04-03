@@ -298,10 +298,6 @@ download_files() {
         curl_auth -fsSL "$REPO_RAW/docker-compose.tor.yml" -o "docker-compose.yml"
         log_success "Downloaded docker-compose.tor.yml as docker-compose.yml"
 
-        log_info "Downloading Tor Dockerfile..."
-        curl_auth -fsSL "$REPO_RAW/Dockerfile.tor" -o "Dockerfile.tor"
-        log_success "Downloaded Dockerfile.tor"
-
         COMPOSE_FILE="docker-compose.yml"
     elif [ "$ENABLE_TUNNEL" = true ] && [ "$TUNNEL_MODE" = "token" ]; then
         log_info "Downloading Tunnel Docker Compose file..."
@@ -314,14 +310,6 @@ download_files() {
         curl_auth -fsSL "$REPO_RAW/docker-compose.https.yml" -o "docker-compose.yml"
         log_success "Downloaded docker-compose.https.yml as docker-compose.yml"
 
-        log_info "Downloading Caddyfile..."
-        curl_auth -fsSL "$REPO_RAW/Caddyfile" -o "Caddyfile"
-        log_success "Downloaded Caddyfile"
-
-        log_info "Downloading Caddy Dockerfile..."
-        curl_auth -fsSL "$REPO_RAW/Dockerfile.caddy" -o "Dockerfile.caddy"
-        log_success "Downloaded Dockerfile.caddy"
-
         COMPOSE_FILE="docker-compose.yml"
     else
         log_info "Downloading Docker Compose file..."
@@ -330,17 +318,6 @@ download_files() {
 
         COMPOSE_FILE="docker-compose.yml"
     fi
-
-    # Download mDNS sidecar files (used by all compose modes)
-    log_info "Downloading mDNS Dockerfile..."
-    curl_auth -fsSL "$REPO_RAW/Dockerfile.mdns" -o "Dockerfile.mdns"
-    log_success "Downloaded Dockerfile.mdns"
-
-    mkdir -p "$INSTALL_DIR/scripts"
-    log_info "Downloading mDNS entrypoint..."
-    curl_auth -fsSL "$REPO_RAW/scripts/mdns-entrypoint.sh" -o "scripts/mdns-entrypoint.sh"
-    chmod +x "scripts/mdns-entrypoint.sh"
-    log_success "Downloaded mdns-entrypoint.sh"
 
     log_info "Downloading environment sample..."
     curl_auth -fsSL "$REPO_RAW/$ENV_SAMPLE" -o "$ENV_SAMPLE"

@@ -55,6 +55,8 @@ The interactive installer asks how you want to expose your server:
 
 After install, use `tillit status` to check your server and `tillit help` for all commands.
 
+**Raspberry Pi?** See the [zero-terminal setup guide](docs/raspberry-pi-setup.md) — flash the SD card, run one script, plug in the Pi, done.
+
 ## Mobile App
 
 The TilliT app is in open beta with **native Tor support** (arti on iOS, ctor on Android) — no extra apps or proxies needed.

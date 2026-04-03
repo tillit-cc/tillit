@@ -54,9 +54,7 @@ services:
       - tillit-net
 
   mdns:
-    build:
-      context: .
-      dockerfile: Dockerfile.mdns
+    image: ghcr.io/tillit-cc/tillit-mdns:latest
     container_name: tillit-mdns
     restart: unless-stopped
     network_mode: host

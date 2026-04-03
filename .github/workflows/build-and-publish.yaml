@@ -57,17 +57,23 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Check if Caddy files changed
-        id: caddy-changes
+      - name: Check if sidecar files changed
+        id: sidecar-changes
         uses: dorny/paths-filter@v3
         with:
           filters: |
             caddy:
               - 'Dockerfile.caddy'
               - 'Caddyfile'
+            tor:
+              - 'Dockerfile.tor'
+            mdns:
+              - 'Dockerfile.mdns'
+              - 'scripts/mdns-entrypoint.sh'
 
+      # --- Caddy ---
       - name: Extract metadata for Caddy
-        if: steps.caddy-changes.outputs.caddy == 'true' || startsWith(github.ref, 'refs/tags/v')
+        if: steps.sidecar-changes.outputs.caddy == 'true' || startsWith(github.ref, 'refs/tags/v')
         id: meta-caddy
         uses: docker/metadata-action@v5
         with:
@@ -78,7 +84,7 @@ jobs:
             type=semver,pattern=v{{major}}.{{minor}}
 
       - name: Build and push Caddy image
-        if: steps.caddy-changes.outputs.caddy == 'true' || startsWith(github.ref, 'refs/tags/v')
+        if: steps.sidecar-changes.outputs.caddy == 'true' || startsWith(github.ref, 'refs/tags/v')
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -87,5 +93,55 @@ jobs:
           push: true
           tags: ${{ steps.meta-caddy.outputs.tags }}
           labels: ${{ steps.meta-caddy.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --- Tor ---
+      - name: Extract metadata for Tor
+        if: steps.sidecar-changes.outputs.tor == 'true' || startsWith(github.ref, 'refs/tags/v')
+        id: meta-tor
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-tor
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+
+      - name: Build and push Tor image
+        if: steps.sidecar-changes.outputs.tor == 'true' || startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.tor
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-tor.outputs.tags }}
+          labels: ${{ steps.meta-tor.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --- mDNS ---
+      - name: Extract metadata for mDNS
+        if: steps.sidecar-changes.outputs.mdns == 'true' || startsWith(github.ref, 'refs/tags/v')
+        id: meta-mdns
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-mdns
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+
+      - name: Build and push mDNS image
+        if: steps.sidecar-changes.outputs.mdns == 'true' || startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.mdns
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-mdns.outputs.tags }}
+          labels: ${{ steps.meta-mdns.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

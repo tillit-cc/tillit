@@ -117,8 +117,6 @@ download_compose() {
     if [ "$NETWORK_MODE" = "tor" ]; then
         log "Downloading docker-compose.tor.yml..."
         curl -fsSL "$REPO_RAW/docker-compose.tor.yml" -o "docker-compose.yml"
-        log "Downloading Dockerfile.tor..."
-        curl -fsSL "$REPO_RAW/Dockerfile.tor" -o "Dockerfile.tor"
     elif [ "$NETWORK_MODE" = "tunnel" ] && [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ]; then
         log "Downloading docker-compose.tunnel.yml..."
         curl -fsSL "$REPO_RAW/docker-compose.tunnel.yml" -o "docker-compose.yml"
@@ -127,15 +125,6 @@ download_compose() {
         curl -fsSL "$REPO_RAW/docker-compose.selfhosted.yml" -o "docker-compose.yml"
     fi
     log "Docker Compose file downloaded"
-
-    # Download mDNS sidecar files (used by all compose modes)
-    log "Downloading Dockerfile.mdns..."
-    curl -fsSL "$REPO_RAW/Dockerfile.mdns" -o "Dockerfile.mdns"
-    mkdir -p "$INSTALL_DIR/scripts"
-    log "Downloading mdns-entrypoint.sh..."
-    curl -fsSL "$REPO_RAW/scripts/mdns-entrypoint.sh" -o "scripts/mdns-entrypoint.sh"
-    chmod +x "scripts/mdns-entrypoint.sh"
-    log "mDNS files downloaded"
 }
 
 download_env() {
