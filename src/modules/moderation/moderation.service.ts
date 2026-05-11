@@ -71,10 +71,7 @@ export class ModerationService {
     });
   }
 
-  async updateReportStatus(
-    reportId: number,
-    status: string,
-  ): Promise<boolean> {
+  async updateReportStatus(reportId: number, status: string): Promise<boolean> {
     const result = await this.reportRepository.update(reportId, { status });
     return (result.affected ?? 0) > 0;
   }

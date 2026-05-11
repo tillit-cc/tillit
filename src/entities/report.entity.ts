@@ -16,8 +16,8 @@ export class Report {
   @Column({ name: 'reporter_user_id' })
   reporterUserId: number;
 
-  @Column({ name: 'reported_user_id' })
-  reportedUserId: number;
+  @Column({ name: 'reported_user_id', type: 'int', nullable: true })
+  reportedUserId: number | null;
 
   @Column({ name: 'room_id' })
   roomId: number;
@@ -42,9 +42,9 @@ export class Report {
   @JoinColumn({ name: 'reporter_user_id' })
   reporter: User;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'reported_user_id' })
-  reportedUser: User;
+  reportedUser: User | null;
 
   @ManyToOne(() => Room, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'room_id' })

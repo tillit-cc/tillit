@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
   Body,
   UseGuards,
   Request,
@@ -10,10 +11,12 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { JwtAuthAllowBannedGuard } from './guards/jwt-auth-allow-banned.guard';
 import { IdentityAuthDto } from './dto/identity-auth.dto';
 import { ChallengeRequestDto, ChallengeResponse } from './dto/challenge.dto';
 import { RegisterPushTokenDto } from './dto/push-token.dto';
 import { ChallengeStore } from './services/challenge.store';
+import { AccountDeletionService } from './services/account-deletion.service';
 import type { AuthenticatedRequest } from '../common/types/authenticated-request';
 
 @Controller('auth')
@@ -21,6 +24,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly challengeStore: ChallengeStore,
+    private readonly accountDeletionService: AccountDeletionService,
   ) {}
 
   /**
@@ -155,6 +159,36 @@ export class AuthController {
       id: user.id,
       identityPublicKey: user.identityPublicKey,
       createdAt: user.createdAt,
+    };
+  }
+
+  /**
+   * DELETE /auth/account
+   * Permanently delete the caller's account and every server-side trace.
+   *
+   * Uses JwtAuthAllowBannedGuard (not the standard JwtAuthGuard) so banned
+   * users can still exercise their right to erasure (GDPR Art. 17 /
+   * Apple App Review 5.1.1(v)).
+   *
+   * Idempotent — if the user was already deleted the response carries
+   * userId: null and zero counters.
+   */
+  @Throttle({
+    default: {
+      ttl: 60000,
+      limit: parseInt(process.env.THROTTLE_AUTH_LIMIT || '5', 10),
+    },
+  })
+  @UseGuards(JwtAuthAllowBannedGuard)
+  @Delete('account')
+  async deleteAccount(@Request() req: AuthenticatedRequest) {
+    const deleted = await this.accountDeletionService.deleteAccount(
+      req.user.userId,
+    );
+
+    return {
+      success: true,
+      deleted,
     };
   }
 }
