@@ -35,6 +35,7 @@ import { MediaConfigService } from '../../src/config/media/config.service';
 import { SenderKeysService } from '../../src/modules/sender-keys/services/sender-keys.service';
 import { RedisConfigService } from '../../src/config/database/redis/config.service';
 import { AuthenticatedSocketAdapter } from '../../src/sockets/authenticated-socket.adapter';
+import { BanService } from '../../src/modules/ban/ban.service';
 import { DataSource } from 'typeorm';
 
 const ALL_ENTITIES = [
@@ -152,6 +153,15 @@ export async function createTestApp(): Promise<TestApp> {
         provide: RedisConfigService,
         useValue: undefined,
       },
+      {
+        provide: BanService,
+        useValue: {
+          isUserBanned: jest.fn().mockResolvedValue(false),
+          banUser: jest.fn(),
+          unbanUser: jest.fn().mockResolvedValue(true),
+          listBannedUsers: jest.fn().mockResolvedValue([]),
+        },
+      },
     ],
   }).compile();
 
@@ -221,6 +231,7 @@ export async function createTestApp(): Promise<TestApp> {
         roomId,
         userId,
         username: username || `User-${userId}`,
+        joinedAt: Date.now(),
       }),
     );
   };
