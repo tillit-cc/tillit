@@ -17,10 +17,10 @@ WORKDIR /usr/src/app
 # Copy application dependency manifests to the container image.
 # A wildcard is used to ensure copying both package.json AND package-lock.json (when available).
 # Copying this first prevents re-running npm install on every code change.
-COPY --chown=node:node package.json pnpm-lock.yaml ./
+COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 # Install pnpm
-RUN npm install -g pnpm@9
+RUN npm install -g pnpm@11
 
 # Install app dependencies using the `npm ci` command instead of `npm install`
 RUN pnpm install --frozen-lockfile
@@ -47,10 +47,10 @@ COPY --chown=node:node --from=development /usr/src/app/node_modules ./node_modul
 COPY --chown=node:node . .
 
 # Install pnpm
-RUN npm install -g pnpm
+RUN npm install -g pnpm@11
 
 # Run the build command which creates the production bundle
-RUN pnpm run build
+RUN CI=true pnpm run build
 
 # Set NODE_ENV environment variable
 ENV NODE_ENV production
