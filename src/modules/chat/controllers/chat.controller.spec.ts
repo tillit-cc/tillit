@@ -24,7 +24,8 @@ describe('ChatController', () => {
     sendToRoom: jest.Mock;
   };
 
-  const mockReq = (userId: number) => ({ user: { userId } }) as any;
+  const mockReq = (userId: number, deviceId = 1) =>
+    ({ user: { userId, deviceId } }) as any;
 
   beforeEach(async () => {
     roomService = {

@@ -55,6 +55,7 @@ export class SenderKeysController {
     await this.senderKeysService.distributeSenderKey(
       roomId,
       req.user.userId,
+      req.user.deviceId,
       dto.distributionId,
       dto.distributions,
     );
@@ -118,6 +119,8 @@ export class SenderKeysController {
       distributions: distributions.map((d) => ({
         id: d.id,
         senderUserId: d.senderUserId,
+        // Legacy rows have NULL — client falls back to deviceId=1.
+        senderDeviceId: d.senderDeviceId ?? 1,
         distributionId: d.distributionId,
         encryptedSenderKey: d.encryptedSenderKey,
         createdAt: d.createdAt,

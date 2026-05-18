@@ -74,18 +74,19 @@ describe('MessageService', () => {
 
   describe('normalizeEnvelope', () => {
     it('should generate UUID and timestamp', () => {
-      const envelope = service.normalizeEnvelope(1, 2, { text: 'hello' });
+      const envelope = service.normalizeEnvelope(1, 2, 1, { text: 'hello' });
 
       expect(envelope.id).toBeDefined();
       expect(envelope.id).toHaveLength(36); // UUID format
       expect(envelope.timestamp).toBeDefined();
       expect(envelope.roomId).toBe(1);
       expect(envelope.senderId).toBe(2);
+      expect(envelope.senderDeviceId).toBe(1);
       expect(envelope.message).toEqual({ text: 'hello' });
     });
 
     it('should use default category and type if not provided', () => {
-      const envelope = service.normalizeEnvelope(1, 2, {});
+      const envelope = service.normalizeEnvelope(1, 2, 1, {});
 
       expect(envelope.category).toBe('message');
       expect(envelope.type).toBe('text');
@@ -95,6 +96,7 @@ describe('MessageService', () => {
       const envelope = service.normalizeEnvelope(
         1,
         2,
+        1,
         {},
         'control',
         'session',
@@ -103,6 +105,11 @@ describe('MessageService', () => {
       expect(envelope.category).toBe('control');
       expect(envelope.type).toBe('session');
     });
+
+    it('should forward the senderDeviceId from auth context', () => {
+      const envelope = service.normalizeEnvelope(1, 2, 7, { text: 'hello' });
+      expect(envelope.senderDeviceId).toBe(7);
+    });
   });
 
   describe('sendToRoom', () => {
@@ -110,17 +117,18 @@ describe('MessageService', () => {
       const socket = mockServer._mockSocket(2, 'sock-2');
       mockServer._setSockets([socket]);
 
-      const result = await service.sendToRoom(1, 1, { text: 'hello' });
+      const result = await service.sendToRoom(1, 1, 1, { text: 'hello' });
 
       expect(result.delivered).toBe(true);
       expect(result.id).toBeDefined();
       expect(result.roomId).toBe(1);
+      expect(result.senderDeviceId).toBe(1);
     });
 
     it('should return delivered=false when no recipients are in room', async () => {
       mockServer._setSockets([]);
 
-      const result = await service.sendToRoom(1, 1, { text: 'hello' });
+      const result = await service.sendToRoom(1, 1, 1, { text: 'hello' });
 
       expect(result.delivered).toBe(false);
     });
@@ -134,7 +142,7 @@ describe('MessageService', () => {
       ]);
       pushTokenRepo.find.mockResolvedValue([]);
 
-      await service.sendToRoom(1, 1, { text: 'hello' });
+      await service.sendToRoom(1, 1, 1, { text: 'hello' });
 
       expect(pendingMessageRepo.create).toHaveBeenCalled();
       expect(pendingMessageRepo.save).toHaveBeenCalled();
@@ -144,6 +152,7 @@ describe('MessageService', () => {
       mockServer._setSockets([]);
 
       await service.sendToRoom(
+        1,
         1,
         1,
         { text: 'hello' },
@@ -166,6 +175,7 @@ describe('MessageService', () => {
       const packet = await service.sendControlPacket(
         1,
         1,
+        1,
         { type: 'SESSION_ESTABLISHED' },
         [2],
       );
@@ -173,6 +183,7 @@ describe('MessageService', () => {
       expect(packet.id).toBeDefined();
       expect(packet.roomId).toBe(1);
       expect(packet.recipientIds).toEqual([2]);
+      expect(packet.senderDeviceId).toBe(1);
     });
 
     it('should broadcast to entire room when recipientIds not specified', async () => {
@@ -184,7 +195,9 @@ describe('MessageService', () => {
       ]);
       pushTokenRepo.find.mockResolvedValue([]);
 
-      const packet = await service.sendControlPacket(1, 1, { type: 'TYPING' });
+      const packet = await service.sendControlPacket(1, 1, 1, {
+        type: 'TYPING',
+      });
 
       expect(packet.id).toBeDefined();
     });
@@ -199,6 +212,7 @@ describe('MessageService', () => {
       await service.sendControlPacket(
         1,
         1,
+        1,
         { type: 'TYPING' },
         undefined,
         undefined,
@@ -211,7 +225,9 @@ describe('MessageService', () => {
     it('should return early if server is not initialized', async () => {
       service.setServer(undefined as any);
 
-      const packet = await service.sendControlPacket(1, 1, { type: 'test' });
+      const packet = await service.sendControlPacket(1, 1, 1, {
+        type: 'test',
+      });
 
       expect(packet.id).toBeDefined();
       // No crash, no socket operations
@@ -227,7 +243,7 @@ describe('MessageService', () => {
       ]);
       pushTokenRepo.find.mockResolvedValue([]);
 
-      const envelope = service.normalizeEnvelope(1, 1, { text: 'test' });
+      const envelope = service.normalizeEnvelope(1, 1, 1, { text: 'test' });
       await service.handleOfflineUsers(1, 1, envelope, [2]); // userId 3 is offline
 
       expect(pendingMessageRepo.create).toHaveBeenCalledTimes(1);
@@ -243,7 +259,7 @@ describe('MessageService', () => {
       ]);
       pushTokenRepo.find.mockResolvedValue([makePushToken({ userId: 2 })]);
 
-      const envelope = service.normalizeEnvelope(1, 1, { text: 'test' });
+      const envelope = service.normalizeEnvelope(1, 1, 1, { text: 'test' });
       await service.handleOfflineUsers(1, 1, envelope, []);
 
       expect(expoNotificationService.sendNotification).toHaveBeenCalled();
@@ -256,7 +272,7 @@ describe('MessageService', () => {
       ]);
       pushTokenRepo.find.mockResolvedValue([makePushToken({ userId: 2 })]);
 
-      const envelope = service.normalizeEnvelope(1, 1, { text: 'test' });
+      const envelope = service.normalizeEnvelope(1, 1, 1, { text: 'test' });
       await service.handleOfflineUsers(1, 1, envelope, [], true);
 
       expect(expoNotificationService.sendNotification).not.toHaveBeenCalled();
@@ -272,7 +288,7 @@ describe('MessageService', () => {
         new Error('Push failed'),
       );
 
-      const envelope = service.normalizeEnvelope(1, 1, { text: 'test' });
+      const envelope = service.normalizeEnvelope(1, 1, 1, { text: 'test' });
 
       // Should not throw
       await expect(

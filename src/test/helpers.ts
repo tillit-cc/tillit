@@ -60,7 +60,7 @@ export function createMockSocketServer() {
 
   const mockSocket = (userId?: number, socketId?: string) => ({
     id: socketId || 'socket-1',
-    user: userId !== undefined ? { userId } : undefined,
+    user: userId !== undefined ? { userId, deviceId: 1 } : undefined,
     emit: jest
       .fn()
       .mockImplementation((_event: string, _data: any, ack?: Function) => {
@@ -248,10 +248,14 @@ export function makeMediaBlob(overrides: Partial<MediaBlob> = {}): MediaBlob {
 /**
  * Create a mock Socket client for gateway tests.
  */
-export function makeMockClient(userId?: number, socketId?: string) {
+export function makeMockClient(
+  userId?: number,
+  socketId?: string,
+  deviceId = 1,
+) {
   return {
     id: socketId || `socket-${userId || 'anon'}`,
-    user: userId !== undefined ? { userId } : undefined,
+    user: userId !== undefined ? { userId, deviceId } : undefined,
     join: jest.fn(),
     leave: jest.fn(),
     emit: jest.fn(),

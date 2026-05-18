@@ -46,16 +46,24 @@ export class AuthenticatedSocketAdapter extends IoAdapter {
 
       try {
         // Validate JWT token
-        const payload = await this.authService.validateJWT(token);
+        const payload = this.authService.validateJWT(token);
 
         // Check if user is banned
         if (await this.banService.isUserBanned(payload.sub)) {
           return next(new Error('BANNED'));
         }
 
+        // Legacy tokens (pre-multi-device) carry no deviceId — fallback
+        // to 1 matches the single-device reality on the wire today.
+        const deviceId =
+          typeof payload.deviceId === 'number' && payload.deviceId > 0
+            ? payload.deviceId
+            : 1;
+
         // Attach user info to socket
         socket.user = {
           userId: payload.sub,
+          deviceId,
         };
 
         return next();

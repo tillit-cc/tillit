@@ -14,6 +14,7 @@ import { SignalKey, KeyTypeId } from '../entities/signal-key.entity';
 import { JwtConfigService } from '../config/jwt/config.service';
 import { IdentityAuthDto, IdentityAuthResponse } from './dto/identity-auth.dto';
 import { ChallengeStore } from './services/challenge.store';
+import { AuthHostService } from './services/auth-host.service';
 import { BanService } from '../modules/ban/ban.service';
 
 @Injectable()
@@ -28,6 +29,7 @@ export class AuthService {
     private jwtService: JwtService,
     private jwtConfig: JwtConfigService,
     private challengeStore: ChallengeStore,
+    private authHostService: AuthHostService,
     private banService: BanService,
   ) {}
 
@@ -35,13 +37,16 @@ export class AuthService {
    * Authenticate user by Signal Protocol identity key
    * Creates new user if not exists, returns JWT token
    *
-   * Security: Verifies challenge signature to prove private key possession
+   * Security: Verifies challenge signature to prove private key possession.
+   * The signature is bound to `expectedHost` via the v1 domain separator —
+   * see `_shared/api/auth-challenge-domain-separation.md`.
    */
   async authenticateByIdentity(
     dto: IdentityAuthDto,
+    expectedHost: string,
   ): Promise<IdentityAuthResponse> {
     // 1. Verify challenge signature (proof of private key possession)
-    await this.verifyChallengeSignature(dto);
+    await this.verifyChallengeSignature(dto, expectedHost);
 
     // 2. Look for existing user by identity public key
     let user = await this.userRepository.findOne({
@@ -76,8 +81,9 @@ export class AuthService {
       await this.saveSignedPreKey(user.id, dto);
     }
 
-    // 6. Generate JWT
-    const accessToken = this.generateToken(user);
+    // 6. Generate JWT (carries deviceId so server can forward it on
+    // sender-key flows without an extra DB lookup per message)
+    const accessToken = this.generateToken(user, dto.deviceId);
 
     return {
       accessToken,
@@ -110,16 +116,27 @@ export class AuthService {
     }
 
     await this.saveSignedPreKey(user.id, dto);
-    const accessToken = this.generateToken(user);
+    const accessToken = this.generateToken(user, dto.deviceId);
 
     return { accessToken, userId: user.id, isNewUser };
   }
 
   /**
-   * Verify challenge signature using Signal Protocol's libsignal
-   * Throws if signature is invalid or challenge expired/not found
+   * Verify challenge signature using Signal Protocol's libsignal.
+   *
+   * The signed payload is NOT the raw nonce: it is the v1 domain-separated
+   * message `utf8("TilliT-Auth-Challenge-v1\n" + expectedHost + "\n") || nonceBytes`.
+   * This prevents a malicious or compromised server from choosing a nonce that
+   * doubles as a SignedPreKey body and replaying the resulting signature on a
+   * different host. `nonceBytes` is the server's own emitted nonce — recovered
+   * from the challenge store, never reconstructed from a client-supplied value.
+   *
+   * Throws if signature is invalid or challenge expired/not found.
    */
-  private async verifyChallengeSignature(dto: IdentityAuthDto): Promise<void> {
+  private async verifyChallengeSignature(
+    dto: IdentityAuthDto,
+    expectedHost: string,
+  ): Promise<void> {
     // 1. Consume challenge (one-time use)
     const challenge = await this.challengeStore.consumeChallenge(
       dto.challengeId,
@@ -136,15 +153,21 @@ export class AuthService {
       );
     }
 
-    // 3. Decode base64 values
+    // 3. Decode values — nonce comes from the server's own stored copy
     const nonce = Buffer.from(challenge.nonce, 'base64');
     const signature = Buffer.from(dto.challengeSignature, 'base64');
     const publicKeyBytes = Buffer.from(dto.identityPublicKey, 'base64');
 
-    // 4. Deserialize Signal Protocol public key and verify signature
+    // 4. Build the domain-separated message the client must have signed
+    const messageToVerify = AuthHostService.buildChallengeMessage(
+      expectedHost,
+      nonce,
+    );
+
+    // 5. Deserialize Signal Protocol public key and verify signature
     try {
       const publicKey = PublicKey.deserialize(publicKeyBytes);
-      const isValid = publicKey.verify(nonce, signature);
+      const isValid = publicKey.verify(messageToVerify, signature);
 
       if (!isValid) {
         throw new UnauthorizedException('Invalid signature');
@@ -188,11 +211,14 @@ export class AuthService {
   }
 
   /**
-   * Generate JWT token for user
+   * Generate JWT token for user.
+   * `deviceId` is embedded so the server can forward it on sender-key
+   * flows (H-04) without an extra DB lookup per relayed message.
    */
-  generateToken(user: User): string {
+  generateToken(user: User, deviceId: number): string {
     const payload = {
       sub: user.id,
+      deviceId,
     };
 
     return this.jwtService.sign(payload, {
@@ -203,9 +229,12 @@ export class AuthService {
   }
 
   /**
-   * Refresh JWT token
+   * Refresh JWT token, preserving the deviceId of the calling session.
    */
-  async refreshToken(userId: number): Promise<{ accessToken: string }> {
+  async refreshToken(
+    userId: number,
+    deviceId: number,
+  ): Promise<{ accessToken: string }> {
     const user = await this.userRepository.findOne({ where: { id: userId } });
 
     if (!user) {
@@ -216,7 +245,7 @@ export class AuthService {
       throw new UnauthorizedException('User is banned', 'BANNED');
     }
 
-    const accessToken = this.generateToken(user);
+    const accessToken = this.generateToken(user, deviceId);
 
     return { accessToken };
   }
@@ -224,7 +253,7 @@ export class AuthService {
   /**
    * Validate JWT token
    */
-  validateJWT(token: string): { sub: number } {
+  validateJWT(token: string): { sub: number; deviceId?: number } {
     try {
       return this.jwtService.verify(token, {
         publicKey: this.jwtConfig.publicKey,

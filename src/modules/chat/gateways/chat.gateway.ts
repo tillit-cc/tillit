@@ -211,6 +211,7 @@ export class ChatGateway
     @MessageBody() data: SendMessageDto,
   ) {
     const userId: number = client.user?.userId;
+    const deviceId: number = client.user?.deviceId ?? 1;
 
     if (!userId) {
       return { error: 'Unauthorized' };
@@ -261,6 +262,9 @@ export class ChatGateway
           id: uuidv4(),
           roomId: data.roomId,
           senderId: userId, // CRITICAL: Include sender ID for decryption
+          // Forwarded so the client can address libsignal's per-device
+          // sender-key store with (senderId, deviceId) instead of hardcoding 1.
+          senderDeviceId: deviceId,
           message: {
             ciphertext: data.message.payload?.ciphertext,
             distributionId: data.message.payload?.distributionId,
@@ -292,6 +296,7 @@ export class ChatGateway
         const envelope = await this.messageService.sendToRoom(
           data.roomId,
           userId,
+          deviceId,
           data.message,
           data.category,
           data.type,
@@ -322,6 +327,7 @@ export class ChatGateway
     @MessageBody() data: SendPacketDto,
   ) {
     const userId: number = client.user?.userId;
+    const deviceId: number = client.user?.deviceId ?? 1;
 
     if (!userId) {
       return { error: 'Unauthorized' };
@@ -350,6 +356,7 @@ export class ChatGateway
       const packet = await this.messageService.sendControlPacket(
         data.roomId,
         userId,
+        deviceId,
         data.packet,
         data.recipientIds,
         client.id, // Exclude sender from broadcast

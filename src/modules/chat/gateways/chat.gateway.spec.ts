@@ -186,6 +186,7 @@ describe('ChatGateway', () => {
       expect(messageService.sendToRoom).toHaveBeenCalledWith(
         1,
         1,
+        1, // deviceId from socket auth
         { text: 'hi' },
         'user',
         'text',
@@ -279,6 +280,7 @@ describe('ChatGateway', () => {
       expect(messageService.sendControlPacket).toHaveBeenCalledWith(
         1,
         1,
+        1, // deviceId from socket auth
         { type: 'SESSION_ESTABLISHED' },
         [2],
         client.id,

@@ -27,6 +27,7 @@ import { RoomService } from '../../src/modules/chat/services/room.service';
 import { ChatController } from '../../src/modules/chat/controllers/chat.controller';
 import { AuthService } from '../../src/auth/auth.service';
 import { ChallengeStore } from '../../src/auth/services/challenge.store';
+import { AuthHostService } from '../../src/auth/services/auth-host.service';
 import { JwtConfigService } from '../../src/config/jwt/config.service';
 import { ExpoNotificationService } from '../../src/services/expo-notification.service';
 import { PushRelayService } from '../../src/services/push-relay.service';
@@ -80,7 +81,7 @@ export interface TestApp {
     userId: number,
     username?: string,
   ) => Promise<void>;
-  getToken: (userId: number) => string;
+  getToken: (userId: number, deviceId?: number) => string;
   createAuthenticatedClient: (token: string) => ClientSocket;
 }
 
@@ -114,6 +115,12 @@ export async function createTestApp(): Promise<TestApp> {
       RoomService,
       AuthService,
       ChallengeStore,
+      {
+        provide: AuthHostService,
+        useValue: {
+          resolveExpectedHost: jest.fn().mockReturnValue('localhost'),
+        },
+      },
       SenderKeysService,
       ExpoNotificationService,
       {
@@ -191,8 +198,11 @@ export async function createTestApp(): Promise<TestApp> {
     { id: 3, code: 'signedPreKey', name: 'Signed Pre Key' },
   ]);
 
-  const getToken = (userId: number): string => {
-    return jwtService.sign({ sub: userId }, { privateKey, algorithm: 'RS256' });
+  const getToken = (userId: number, deviceId = 1): string => {
+    return jwtService.sign(
+      { sub: userId, deviceId },
+      { privateKey, algorithm: 'RS256' },
+    );
   };
 
   const seedUser = async (

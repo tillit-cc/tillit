@@ -80,6 +80,7 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
   normalizeEnvelope(
     roomId: number,
     senderId: number,
+    senderDeviceId: number,
     message: any,
     category?: string,
     type?: string,
@@ -88,6 +89,7 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
       id: uuidv4(),
       roomId,
       senderId,
+      senderDeviceId,
       message,
       timestamp: new Date().toISOString(),
       category: category || 'message',
@@ -109,6 +111,7 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
   async sendToRoom(
     roomId: number,
     senderId: number,
+    senderDeviceId: number,
     message: any,
     category?: string,
     type?: string,
@@ -118,6 +121,7 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
     const envelope = this.normalizeEnvelope(
       roomId,
       senderId,
+      senderDeviceId,
       message,
       category,
       type,
@@ -153,6 +157,7 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
   async sendControlPacket(
     roomId: number,
     senderId: number,
+    senderDeviceId: number,
     packet: any,
     recipientIds?: number[],
     senderSocketId?: string,
@@ -162,6 +167,7 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
       id: uuidv4(),
       roomId,
       senderId,
+      senderDeviceId,
       packet,
       recipientIds,
       timestamp: new Date().toISOString(),

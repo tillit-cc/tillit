@@ -6,6 +6,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { ChallengeStore } from './services/challenge.store';
+import { AuthHostService } from './services/auth-host.service';
 import { AccountDeletionService } from './services/account-deletion.service';
 import { JwtAuthAllowBannedGuard } from './guards/jwt-auth-allow-banned.guard';
 import { User } from '../entities/user.entity';
@@ -64,6 +65,7 @@ const conditionalProviders = isCloudMode() ? [RedisKeystore] : [];
     AuthService,
     JwtStrategy,
     ChallengeStore,
+    AuthHostService,
     AccountDeletionService,
     JwtAuthAllowBannedGuard,
     ...conditionalProviders,

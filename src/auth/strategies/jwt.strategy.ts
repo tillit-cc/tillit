@@ -17,7 +17,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: { sub?: number }) {
+  async validate(payload: { sub?: number; deviceId?: number }) {
     if (!payload.sub || typeof payload.sub !== 'number') {
       throw new UnauthorizedException('Invalid token payload');
     }
@@ -26,8 +26,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('User is banned', 'BANNED');
     }
 
+    // Legacy tokens (pre-multi-device) carry no deviceId — fallback to 1
+    // matches the single-device reality on the wire today.
+    const deviceId =
+      typeof payload.deviceId === 'number' && payload.deviceId > 0
+        ? payload.deviceId
+        : 1;
+
     return {
       userId: payload.sub,
+      deviceId,
     };
   }
 }

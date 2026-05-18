@@ -90,6 +90,7 @@ export class SenderKeysService {
   async distributeSenderKey(
     roomId: number,
     senderUserId: number,
+    senderDeviceId: number,
     distributionId: string,
     distributions: Array<{
       recipientUserId: number;
@@ -140,6 +141,7 @@ export class SenderKeysService {
       this.distributionRepository.create({
         roomId,
         senderUserId,
+        senderDeviceId,
         distributionId,
         recipientUserId: dist.recipientUserId,
         encryptedSenderKey: dist.encryptedSenderKey,
@@ -161,6 +163,7 @@ export class SenderKeysService {
           .emit('senderKeysAvailable', {
             roomId,
             senderUserId,
+            senderDeviceId,
             distributionId,
           });
         this.logger.debug(

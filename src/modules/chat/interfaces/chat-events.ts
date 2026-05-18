@@ -19,6 +19,12 @@ export interface MessageEnvelope {
   id: string;
   roomId: number;
   senderId: number;
+  /**
+   * Sender's device id. Optional so legacy pending envelopes (queued
+   * before the H-04 fix) decode unchanged; the client falls back to
+   * deviceId=1 when absent.
+   */
+  senderDeviceId?: number;
   message: any;
   timestamp: string;
   category?: string;
@@ -30,6 +36,7 @@ export interface ControlPacket {
   id: string;
   roomId: number;
   senderId: number;
+  senderDeviceId?: number;
   packet: any;
   recipientIds?: number[];
   timestamp: string;

@@ -22,6 +22,11 @@ export class SenderKeyDistribution {
   @Column({ name: 'sender_user_id' })
   senderUserId: number;
 
+  // Nullable for backward compat with rows written before the H-04 fix —
+  // client falls back to deviceId=1 (matches single-device reality today).
+  @Column({ name: 'sender_device_id', type: 'int', nullable: true })
+  senderDeviceId: number | null;
+
   @Column({ name: 'distribution_id', length: 36 })
   distributionId: string;
 

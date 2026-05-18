@@ -20,7 +20,7 @@ export class JwtAuthAllowBannedGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<{
       headers: Record<string, string | undefined>;
-      user?: { userId: number };
+      user?: { userId: number; deviceId: number };
     }>();
 
     const header = req.headers['authorization'];
@@ -35,7 +35,12 @@ export class JwtAuthAllowBannedGuard implements CanActivate {
       throw new UnauthorizedException('Invalid token payload');
     }
 
-    req.user = { userId: payload.sub };
+    const deviceId =
+      typeof payload.deviceId === 'number' && payload.deviceId > 0
+        ? payload.deviceId
+        : 1;
+
+    req.user = { userId: payload.sub, deviceId };
     return true;
   }
 }

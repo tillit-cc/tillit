@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security (H-04 pre-open-source audit close-out)
+
+- Sender-key flows now forward the sender's `deviceId` so the client can
+  address libsignal's per-device store with `(senderId, deviceId)` instead
+  of hardcoding `1`. Not exploitable today (all users on single device) but
+  unblocks safe multi-device rollout — without this, two devices of the
+  same user would collide in the recipient's sender-key store.
+- JWT claims now include `deviceId` (in addition to `sub`). Legacy tokens
+  without the claim fall back to `1`, matching today's single-device reality.
+- `GET /sender-keys/:roomId` response includes `senderDeviceId` on each
+  distribution item (default `1` for rows written before the fix).
+- `MessageEnvelope` and `ControlPacket` include optional `senderDeviceId`
+  populated from the sender's auth context. Old envelopes already queued in
+  `pending_messages` (pre-fix) decode unchanged — client falls back to `1`.
+- New migration `1746000000000-add-sender-device-id` (both MariaDB and SQLite)
+  adds nullable `sender_device_id` column to `sender_key_distributions`.
+- Spec: `_shared/api/sender-key-device-id.md`.
+
+### Security (BREAKING — auth protocol v1)
+
+- `POST /auth/identity` now verifies the challenge signature against a
+  domain-separated message `utf8("TilliT-Auth-Challenge-v1\n" + host + "\n") || nonce`
+  instead of the raw nonce. Closes a replay attack where a malicious server
+  could pick a nonce that doubles as a valid Curve25519 public key, turning the
+  auth signature into a reusable `SignedPreKeySignature` for X3DH impersonation.
+- Clients running v1.3.x or earlier will fail authentication after this change
+  — they sign the raw nonce. Coordinate with client v1.4.0 rollout.
+- New env var `AUTH_ALLOWED_HOSTS` (comma-separated). When set, the server
+  rejects auth attempts whose `Host` header is not in the allowlist. Falls back
+  to `APP_URL`/`DOMAIN` derivation when unset; rejects everything when no
+  configuration is found.
+- Test vectors pinned at `_shared/api/auth-challenge-test-vectors.json` and
+  regenerable via `scripts/generate-auth-challenge-test-vectors.ts`.
+
 ## [0.5.0] - 2026-03-19
 
 ### Added

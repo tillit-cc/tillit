@@ -172,13 +172,23 @@ All endpoints require JWT authentication via `Authorization: Bearer <token>` hea
 
 **Authentication** (`/auth`):
 - `POST /auth/challenge` - Request challenge nonce (body: `{ identityPublicKey }`)
-- `POST /auth/identity` - Authenticate with signed challenge (body: `{ identityPublicKey, challengeId, challengeSignature, registrationId, deviceId, signedPreKey... }`)
+- `POST /auth/identity` - Authenticate with signed challenge (body: `{ identityPublicKey, challengeId, challengeSignature, registrationId, deviceId, signedPreKey... }`). `challengeSignature` must sign the domain-separated message `utf8("TilliT-Auth-Challenge-v1\n" + host + "\n") || nonce`, not the raw nonce. The server validates the request `Host` header against `AUTH_ALLOWED_HOSTS`. See `_shared/api/auth-challenge-domain-separation.md`.
 - `GET /auth/status` - Server reachability + ban check (JwtAuthGuard). Returns `{ status: 'ok' }` on success, or 401 with `error: 'BANNED'` if banned (standard 401 if token invalid/missing). If server is unreachable, client handles as offline.
 - `POST /auth/refresh` - Refresh JWT token
 
 **Signal Keys** (`/signal-keys`):
 - `POST /signal-keys/upload` - Upload pre-keys and identity key for device
 - `GET /signal-keys/bundle/:userId/:deviceId` - Get key bundle for establishing session
+
+**Sender Keys** (`/sender-keys`):
+- `POST /sender-keys/initialize/:roomId` - Switch a room to sender-key mode (returns `distributionId`)
+- `POST /sender-keys/distribute/:roomId` - Distribute the sender's key, encrypted per-recipient
+- `PUT /sender-keys/mark-delivered` - Acknowledge delivery of distributions
+- `GET /sender-keys/active/:roomId` - Get the caller's active distribution for the room
+- `GET /sender-keys/:roomId` - Retrieve pending sender-key distributions. Each item:
+  `{ id, senderUserId, senderDeviceId, distributionId, encryptedSenderKey, createdAt }`.
+  `senderDeviceId` defaults to `1` for rows written before the H-04 fix.
+- `POST /sender-keys/rotate/:roomId` - Rotate (new distribution)
 
 **Moderation** (`/moderation`):
 - `POST /moderation/report` - Report a user or message (body: `{ reportedUserId, roomId, messageId?, reason, description? }`). Reasons: `spam`, `harassment`, `illegal_content`, `other`. Reporter must be room member.
@@ -205,6 +215,8 @@ Banned users are blocked at 3 levels: JWT strategy (all REST), auth service (log
 - `userLeftRoom` - User permanently left an administered room `{ roomId, userId, timestamp }` — other clients should delete that user's messages locally
 
 ### Message Flow (Backend Side)
+
+**Envelope shape**: `{ id, roomId, senderId, senderDeviceId?, message, timestamp, category?, type?, version }`. `senderDeviceId` is forwarded from the sender's JWT — clients use it on sender-key flows to address libsignal's per-device store with `(senderId, deviceId)` instead of hardcoding `1`. Absent on legacy envelopes (pre-fix `pending_messages`); client falls back to `1`. See `_shared/api/sender-key-device-id.md`.
 
 **Sending**: Client emits `sendMessage` → backend validates room membership → generates UUID + timestamp → relays to room via `deliverToRoomWithAck()` → non-acking sockets get messages queued in `pending_messages`
 
@@ -239,6 +251,7 @@ All operational constants are configurable via environment variables with sensib
 | `MAX_VOLATILE_PAYLOAD_BYTES` | 10485760 (10MB) | Max volatile message payload size |
 | `PUSH_NOTIFICATION_SOUND` | default | Push notification sound file |
 | `THROTTLE_KEY_FETCH_PER_TARGET` | 3 | Key fetch rate limit per (requester, target) pair |
+| `AUTH_ALLOWED_HOSTS` | (derived) | Comma-separated hostnames accepted by `POST /auth/identity`. Defaults to a single host extracted from `APP_URL` or `DOMAIN`; rejects everything when nothing is configured. |
 
 ## Best Practices
 

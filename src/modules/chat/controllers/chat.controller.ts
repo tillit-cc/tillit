@@ -288,6 +288,7 @@ export class ChatController {
       await this.messageService.sendToRoom(
         id,
         req.user.userId,
+        req.user.deviceId,
         {
           newName: updateRoomDto.name,
           updatedBy: req.user.userId,
@@ -345,6 +346,7 @@ export class ChatController {
     await this.messageService.sendToRoom(
       roomId,
       req.user.userId,
+      req.user.deviceId,
       { message_id: messageId },
       'system',
       'message_deleted',

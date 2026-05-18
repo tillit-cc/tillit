@@ -12,6 +12,7 @@ import { PushToken, PushProvider } from '../entities/push-token.entity';
 import { SignalKey, KeyTypeId } from '../entities/signal-key.entity';
 import { JwtConfigService } from '../config/jwt/config.service';
 import { ChallengeStore } from './services/challenge.store';
+import { AuthHostService } from './services/auth-host.service';
 import { BanService } from '../modules/ban/ban.service';
 import { IdentityAuthDto } from './dto/identity-auth.dto';
 import { createMockRepository, makeUser, makePushToken } from '../test/helpers';
@@ -37,6 +38,7 @@ describe('AuthService', () => {
     createChallenge: jest.Mock;
   };
   let banService: { isUserBanned: jest.Mock };
+  const TEST_HOST = 'api.tillit.cc';
 
   const makeDto = (
     overrides: Partial<IdentityAuthDto> = {},
@@ -82,6 +84,12 @@ describe('AuthService', () => {
         { provide: JwtService, useValue: jwtService },
         { provide: JwtConfigService, useValue: jwtConfig },
         { provide: ChallengeStore, useValue: challengeStore },
+        {
+          provide: AuthHostService,
+          useValue: {
+            resolveExpectedHost: jest.fn().mockReturnValue(TEST_HOST),
+          },
+        },
         { provide: BanService, useValue: banService },
       ],
     }).compile();
@@ -100,7 +108,7 @@ describe('AuthService', () => {
         Promise.resolve({ ...u, id: 1 }),
       );
 
-      const result = await service.authenticateByIdentity(makeDto());
+      const result = await service.authenticateByIdentity(makeDto(), TEST_HOST);
 
       expect(result.accessToken).toBe('jwt-token');
       expect(result.isNewUser).toBe(true);
@@ -115,7 +123,7 @@ describe('AuthService', () => {
       });
       userRepo.findOne.mockResolvedValue(existingUser);
 
-      const result = await service.authenticateByIdentity(makeDto());
+      const result = await service.authenticateByIdentity(makeDto(), TEST_HOST);
 
       expect(result.accessToken).toBe('jwt-token');
       expect(result.isNewUser).toBe(false);
@@ -130,17 +138,17 @@ describe('AuthService', () => {
       });
       userRepo.findOne.mockResolvedValue(existingUser);
 
-      await expect(service.authenticateByIdentity(makeDto())).rejects.toThrow(
-        ConflictException,
-      );
+      await expect(
+        service.authenticateByIdentity(makeDto(), TEST_HOST),
+      ).rejects.toThrow(ConflictException);
     });
 
     it('should throw BadRequestException if challenge is invalid/expired', async () => {
       challengeStore.consumeChallenge.mockResolvedValue(null);
 
-      await expect(service.authenticateByIdentity(makeDto())).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.authenticateByIdentity(makeDto(), TEST_HOST),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should throw BadRequestException if identity key does not match challenge', async () => {
@@ -149,9 +157,9 @@ describe('AuthService', () => {
         identityPublicKey: 'ZGlmZmVyZW50LWtleQ==', // different key
       });
 
-      await expect(service.authenticateByIdentity(makeDto())).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.authenticateByIdentity(makeDto(), TEST_HOST),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should throw when signature verification fails', async () => {
@@ -165,24 +173,58 @@ describe('AuthService', () => {
         identityPublicKey: 'dGVzdC1rZXk=',
       });
 
-      await expect(service.authenticateByIdentity(makeDto())).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(
+        service.authenticateByIdentity(makeDto(), TEST_HOST),
+      ).rejects.toThrow(UnauthorizedException);
 
       // Restore mock
       PublicKey.deserialize.mockReturnValue({
         verify: jest.fn().mockReturnValue(true),
       });
     });
+
+    it('should verify the domain-separated message, not the raw nonce', async () => {
+      const { PublicKey } = require('@signalapp/libsignal-client');
+      const verifyMock = jest.fn().mockReturnValue(true);
+      PublicKey.deserialize.mockReturnValue({ verify: verifyMock });
+
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=', // base64 of "nonce"
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(null);
+      userRepo.save.mockImplementation((u: any) =>
+        Promise.resolve({ ...u, id: 1 }),
+      );
+
+      await service.authenticateByIdentity(makeDto(), TEST_HOST);
+
+      expect(verifyMock).toHaveBeenCalledTimes(1);
+      const verifiedMessage: Buffer = verifyMock.mock.calls[0][0];
+      const expectedPrefix = Buffer.from(
+        `TilliT-Auth-Challenge-v1\n${TEST_HOST}\n`,
+        'utf8',
+      );
+      const expectedMessage = Buffer.concat([
+        expectedPrefix,
+        Buffer.from('bm9uY2U=', 'base64'),
+      ]);
+      expect(verifiedMessage.equals(expectedMessage)).toBe(true);
+
+      // Sanity: the raw nonce alone is NOT what we verified
+      expect(verifiedMessage.equals(Buffer.from('bm9uY2U=', 'base64'))).toBe(
+        false,
+      );
+    });
   });
 
   describe('generateToken', () => {
-    it('should call jwtService.sign with sub: user.id and RS256', () => {
+    it('should call jwtService.sign with sub + deviceId and RS256', () => {
       const user = makeUser({ id: 42 });
-      service.generateToken(user);
+      service.generateToken(user, 3);
 
       expect(jwtService.sign).toHaveBeenCalledWith(
-        { sub: 42 },
+        { sub: 42, deviceId: 3 },
         expect.objectContaining({
           algorithm: 'RS256',
           privateKey: 'private-key',
@@ -192,19 +234,23 @@ describe('AuthService', () => {
   });
 
   describe('refreshToken', () => {
-    it('should return new token for existing user', async () => {
+    it('should return new token for existing user preserving deviceId', async () => {
       const user = makeUser({ id: 1 });
       userRepo.findOne.mockResolvedValue(user);
 
-      const result = await service.refreshToken(1);
+      const result = await service.refreshToken(1, 5);
 
       expect(result.accessToken).toBe('jwt-token');
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        { sub: 1, deviceId: 5 },
+        expect.any(Object),
+      );
     });
 
     it('should throw UnauthorizedException if user not found', async () => {
       userRepo.findOne.mockResolvedValue(null);
 
-      await expect(service.refreshToken(999)).rejects.toThrow(
+      await expect(service.refreshToken(999, 1)).rejects.toThrow(
         UnauthorizedException,
       );
     });

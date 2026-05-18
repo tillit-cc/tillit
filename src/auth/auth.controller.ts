@@ -4,6 +4,7 @@ import {
   Get,
   Delete,
   Body,
+  Headers,
   UseGuards,
   Request,
   BadRequestException,
@@ -16,6 +17,7 @@ import { IdentityAuthDto } from './dto/identity-auth.dto';
 import { ChallengeRequestDto, ChallengeResponse } from './dto/challenge.dto';
 import { RegisterPushTokenDto } from './dto/push-token.dto';
 import { ChallengeStore } from './services/challenge.store';
+import { AuthHostService } from './services/auth-host.service';
 import { AccountDeletionService } from './services/account-deletion.service';
 import type { AuthenticatedRequest } from '../common/types/authenticated-request';
 
@@ -24,6 +26,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly challengeStore: ChallengeStore,
+    private readonly authHostService: AuthHostService,
     private readonly accountDeletionService: AccountDeletionService,
   ) {}
 
@@ -66,8 +69,15 @@ export class AuthController {
     },
   })
   @Post('identity')
-  async authenticateByIdentity(@Body() dto: IdentityAuthDto) {
-    const result = await this.authService.authenticateByIdentity(dto);
+  async authenticateByIdentity(
+    @Body() dto: IdentityAuthDto,
+    @Headers('host') hostHeader: string,
+  ) {
+    const expectedHost = this.authHostService.resolveExpectedHost(hostHeader);
+    const result = await this.authService.authenticateByIdentity(
+      dto,
+      expectedHost,
+    );
 
     return {
       accessToken: result.accessToken,
@@ -116,7 +126,10 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Get('token/refresh')
   async refreshToken(@Request() req: AuthenticatedRequest) {
-    const result = await this.authService.refreshToken(req.user.userId);
+    const result = await this.authService.refreshToken(
+      req.user.userId,
+      req.user.deviceId,
+    );
 
     return {
       accessToken: result.accessToken,
