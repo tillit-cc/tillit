@@ -94,6 +94,7 @@ export class SenderKeysService {
     distributionId: string,
     distributions: Array<{
       recipientUserId: number;
+      recipientDeviceId?: number;
       encryptedSenderKey: string;
     }>,
   ): Promise<void> {
@@ -124,11 +125,16 @@ export class SenderKeysService {
     });
     const memberIdSet = new Set(members.map((m) => m.userId));
 
-    const validDistributions = distributions.filter(
-      (dist) =>
-        dist.recipientUserId !== senderUserId &&
-        memberIdSet.has(dist.recipientUserId),
-    );
+    const validDistributions = distributions.filter((dist) => {
+      // Pairing-time self-distribution: a sender CAN distribute to their
+      // own other devices (so a freshly linked device can decrypt the
+      // sender's existing group messages). Filter out self only when
+      // targeting the same device.
+      const isSelfSameDevice =
+        dist.recipientUserId === senderUserId &&
+        (dist.recipientDeviceId ?? null) === senderDeviceId;
+      return !isSelfSameDevice && memberIdSet.has(dist.recipientUserId);
+    });
 
     if (validDistributions.length !== distributions.length) {
       throw new ForbiddenException(
@@ -144,6 +150,7 @@ export class SenderKeysService {
         senderDeviceId,
         distributionId,
         recipientUserId: dist.recipientUserId,
+        recipientDeviceId: dist.recipientDeviceId ?? null,
         encryptedSenderKey: dist.encryptedSenderKey,
         delivered: false,
         createdAt: Date.now(),
@@ -155,19 +162,37 @@ export class SenderKeysService {
       `Distributed sender key for user ${senderUserId} in room ${roomId} to ${validDistributions.length} recipients`,
     );
 
-    // Notify recipients via WebSocket that new sender keys are available
+    // Notify recipients via WebSocket that new sender keys are available.
+    // When the distribution targets a specific device, narrow the emit so
+    // peers on other devices of the same user don't get a spurious wake-up.
     if (this.server) {
+      const sockets = await this.server.fetchSockets();
       for (const dist of validDistributions) {
-        this.server
-          .to(`user:${dist.recipientUserId}`)
-          .emit('senderKeysAvailable', {
-            roomId,
-            senderUserId,
-            senderDeviceId,
-            distributionId,
+        const payload = {
+          roomId,
+          senderUserId,
+          senderDeviceId,
+          distributionId,
+          recipientDeviceId: dist.recipientDeviceId ?? null,
+        };
+        if (dist.recipientDeviceId != null) {
+          const targets = sockets.filter((s: any) => {
+            const u = s.user;
+            return (
+              u?.userId === dist.recipientUserId &&
+              u?.deviceId === dist.recipientDeviceId
+            );
           });
+          for (const s of targets) {
+            (s as any).emit('senderKeysAvailable', payload);
+          }
+        } else {
+          this.server
+            .to(`user:${dist.recipientUserId}`)
+            .emit('senderKeysAvailable', payload);
+        }
         this.logger.debug(
-          `Notified user ${dist.recipientUserId} about new sender key`,
+          `Notified user ${dist.recipientUserId} (device ${dist.recipientDeviceId ?? 'any'}) about new sender key`,
         );
       }
     }
@@ -175,10 +200,15 @@ export class SenderKeysService {
 
   /**
    * Retrieve pending sender keys for a user in a room.
+   *
+   * When `recipientDeviceId` is provided, narrow the result to rows targeted
+   * at this device (or null = legacy single-device rows) so a freshly linked
+   * device doesn't sweep up distributions meant for its sibling devices.
    */
   async getPendingSenderKeys(
     roomId: number,
     recipientUserId: number,
+    recipientDeviceId?: number,
   ): Promise<SenderKeyDistribution[]> {
     const membership = await this.roomUserRepository.findOne({
       where: { roomId, userId: recipientUserId },
@@ -187,17 +217,22 @@ export class SenderKeysService {
       throw new ForbiddenException('User is not a member of this room');
     }
 
-    const distributions = await this.distributionRepository.find({
-      where: {
-        roomId,
-        recipientUserId,
-        delivered: false,
-      },
-      order: { createdAt: 'ASC' },
-    });
+    const qb = this.distributionRepository
+      .createQueryBuilder('d')
+      .where('d.room_id = :roomId', { roomId })
+      .andWhere('d.recipient_user_id = :recipientUserId', { recipientUserId })
+      .andWhere('d.delivered = :delivered', { delivered: false })
+      .orderBy('d.created_at', 'ASC');
+    if (recipientDeviceId != null) {
+      qb.andWhere(
+        '(d.recipient_device_id = :recipientDeviceId OR d.recipient_device_id IS NULL)',
+        { recipientDeviceId },
+      );
+    }
+    const distributions = await qb.getMany();
 
     this.logger.log(
-      `Retrieved ${distributions.length} pending sender keys for user ${recipientUserId} in room ${roomId}`,
+      `Retrieved ${distributions.length} pending sender keys for user ${recipientUserId} (device ${recipientDeviceId ?? 'any'}) in room ${roomId}`,
     );
     return distributions;
   }

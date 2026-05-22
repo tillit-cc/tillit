@@ -113,6 +113,7 @@ export class SenderKeysController {
     const distributions = await this.senderKeysService.getPendingSenderKeys(
       roomId,
       req.user.userId,
+      req.user.deviceId,
     );
 
     return {
@@ -121,6 +122,7 @@ export class SenderKeysController {
         senderUserId: d.senderUserId,
         // Legacy rows have NULL — client falls back to deviceId=1.
         senderDeviceId: d.senderDeviceId ?? 1,
+        recipientDeviceId: d.recipientDeviceId ?? 1,
         distributionId: d.distributionId,
         encryptedSenderKey: d.encryptedSenderKey,
         createdAt: d.createdAt,

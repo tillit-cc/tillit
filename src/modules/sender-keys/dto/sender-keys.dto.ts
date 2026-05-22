@@ -3,6 +3,7 @@ import {
   IsArray,
   ValidateNested,
   IsNumber,
+  IsOptional,
   MaxLength,
   ArrayMaxSize,
 } from 'class-validator';
@@ -16,6 +17,13 @@ export class InitializeSenderKeysDto {
 class SenderKeyDistributionItem {
   @IsNumber()
   recipientUserId: number;
+
+  // Optional for backward compat — legacy single-device clients omit it.
+  // Once multi-device clients are everywhere, callers must set it explicitly
+  // so the primary can distribute one row per (recipientUser, recipientDevice).
+  @IsOptional()
+  @IsNumber()
+  recipientDeviceId?: number;
 
   @IsString()
   @MaxLength(10000)
