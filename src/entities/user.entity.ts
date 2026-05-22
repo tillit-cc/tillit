@@ -18,9 +18,6 @@ export class User {
   @Column({ name: 'identity_public_key', unique: true, length: 500 })
   identityPublicKey: string; // Base64-encoded Signal Protocol identity key
 
-  @Column({ name: 'registration_id' })
-  registrationId: number; // Signal Protocol registration ID
-
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

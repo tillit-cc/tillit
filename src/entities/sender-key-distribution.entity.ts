@@ -36,6 +36,11 @@ export class SenderKeyDistribution {
   @Column({ name: 'recipient_user_id' })
   recipientUserId: number;
 
+  // Nullable for backward compat with rows written before multi-device —
+  // client falls back to deviceId=1.
+  @Column({ name: 'recipient_device_id', type: 'int', nullable: true })
+  recipientDeviceId: number | null;
+
   @Column({ name: 'created_at', type: 'bigint' })
   createdAt: number;
 

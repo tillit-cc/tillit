@@ -11,6 +11,7 @@ import { Room } from './room.entity';
 
 @Entity('pending_messages')
 @Index(['userId', 'roomId'])
+@Index(['userId', 'recipientDeviceId', 'roomId'])
 @Index(['expiresAt'])
 export class PendingMessage {
   @PrimaryColumn({ length: 36 })
@@ -18,6 +19,9 @@ export class PendingMessage {
 
   @Column({ name: 'user_id' })
   userId: number;
+
+  @Column({ name: 'recipient_device_id', nullable: true, type: 'int' })
+  recipientDeviceId: number | null;
 
   @Column({ name: 'room_id' })
   roomId: number;
