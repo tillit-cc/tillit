@@ -13,6 +13,10 @@ import { RoomUser } from '../../../entities/room-user.entity';
 import { User } from '../../../entities/user.entity';
 import { MediaBlob } from '../../../entities/media-blob.entity';
 import { PendingMessage } from '../../../entities/pending-message.entity';
+import {
+  UserDevice,
+  UserDeviceStatus,
+} from '../../../entities/user-device.entity';
 import { MediaConfigService } from '../../../config/media/config.service';
 import { randomBytes } from 'crypto';
 
@@ -33,6 +37,33 @@ export class RoomService {
     private mediaConfig: MediaConfigService,
     private dataSource: DataSource,
   ) {}
+
+  /**
+   * Active devices of every member of `roomId` (joined room_users ⨝
+   * user_devices.status='active'). Used by sender-key fan-out to know which
+   * (userId, deviceId) targets should receive a broadcast envelope and to
+   * decide which offline targets need a per-device pending row.
+   */
+  async getActiveDevices(
+    roomId: number,
+  ): Promise<Array<{ userId: number; deviceId: number }>> {
+    const rows = await this.roomUserRepository
+      .createQueryBuilder('ru')
+      .innerJoin(
+        UserDevice,
+        'ud',
+        'ud.user_id = ru.userId AND ud.status = :status',
+        { status: UserDeviceStatus.ACTIVE },
+      )
+      .where('ru.roomId = :roomId', { roomId })
+      .select('ru.userId', 'userId')
+      .addSelect('ud.device_id', 'deviceId')
+      .getRawMany<{ userId: number | string; deviceId: number | string }>();
+    return rows.map((r) => ({
+      userId: Number(r.userId),
+      deviceId: Number(r.deviceId),
+    }));
+  }
 
   /**
    * Generate default username for a room member
@@ -279,6 +310,24 @@ export class RoomService {
     });
 
     return !!membership;
+  }
+
+  /**
+   * Distinct user IDs that share at least one room with `userId` (excluding
+   * `userId` itself). Used to fan-out `deviceRevoked` to every peer who may
+   * have an active Signal session with one of `userId`'s devices.
+   */
+  async getPeerUserIds(userId: number): Promise<number[]> {
+    const rows = await this.roomUserRepository
+      .createQueryBuilder('ru1')
+      .innerJoin(RoomUser, 'ru2', 'ru1.roomId = ru2.roomId')
+      .where('ru1.userId = :userId', { userId })
+      .andWhere('ru2.userId != :userId', { userId })
+      .select('DISTINCT ru2.userId', 'peerUserId')
+      .getRawMany<{ peerUserId: number | string }>();
+    return rows
+      .map((r) => Number(r.peerUserId))
+      .filter((n) => !Number.isNaN(n));
   }
 
   /**

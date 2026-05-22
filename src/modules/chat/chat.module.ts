@@ -1,11 +1,13 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AuthModule } from '../../auth/auth.module';
 import { Room } from '../../entities/room.entity';
 import { RoomUser } from '../../entities/room-user.entity';
 import { User } from '../../entities/user.entity';
 import { PushToken } from '../../entities/push-token.entity';
 import { PendingMessage } from '../../entities/pending-message.entity';
 import { MediaBlob } from '../../entities/media-blob.entity';
+import { UserDevice } from '../../entities/user-device.entity';
 import { ChatGateway } from './gateways/chat.gateway';
 import { MessageService } from './services/message.service';
 import { RoomService } from './services/room.service';
@@ -33,10 +35,12 @@ const conditionalImports = isCloudMode() ? [RedisConfigModule] : [];
       PushToken,
       PendingMessage,
       MediaBlob,
+      UserDevice,
     ]),
     SenderKeysModule,
     MediaConfigModule,
     CloudWorkerConfigModule,
+    forwardRef(() => AuthModule),
     ...conditionalImports,
   ],
   providers: [

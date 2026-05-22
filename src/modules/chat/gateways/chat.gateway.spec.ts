@@ -3,6 +3,8 @@ import { ChatGateway } from './chat.gateway';
 import { MessageService } from '../services/message.service';
 import { RoomService } from '../services/room.service';
 import { SenderKeysService } from '../../sender-keys/services/sender-keys.service';
+import { DeviceLinkService } from '../../../auth/services/device-link.service';
+import { DeviceService } from '../../../auth/services/device.service';
 import { RedisConfigService } from '../../../config/database/redis/config.service';
 import { ChatEvents } from '../interfaces/chat-events';
 import { makeRoom, makeMockClient } from '../../../test/helpers';
@@ -29,11 +31,14 @@ describe('ChatGateway', () => {
     getUserRooms: jest.Mock;
     isUserInRoom: jest.Mock;
     getRoomById: jest.Mock;
+    getPeerUserIds: jest.Mock;
   };
   let senderKeysService: {
     setServer: jest.Mock;
     getPendingSenderKeys: jest.Mock;
   };
+  let deviceLinkService: { setNotifier: jest.Mock; isDeviceRevoked: jest.Mock };
+  let deviceService: { setNotifier: jest.Mock };
 
   beforeEach(async () => {
     messageService = {
@@ -51,7 +56,7 @@ describe('ChatGateway', () => {
       broadcastToRoomMembers: jest.fn(),
       deliverEnvelopeToRoom: jest.fn().mockResolvedValue({
         delivered: true,
-        ackedUserIds: [],
+        ackedDeviceKeys: new Set<string>(),
       }),
     };
 
@@ -59,11 +64,20 @@ describe('ChatGateway', () => {
       getUserRooms: jest.fn().mockResolvedValue([]),
       isUserInRoom: jest.fn().mockResolvedValue(true),
       getRoomById: jest.fn(),
+      getPeerUserIds: jest.fn().mockResolvedValue([]),
     };
 
     senderKeysService = {
       setServer: jest.fn(),
       getPendingSenderKeys: jest.fn().mockResolvedValue([]),
+    };
+
+    deviceLinkService = {
+      setNotifier: jest.fn(),
+      isDeviceRevoked: jest.fn().mockResolvedValue(false),
+    };
+    deviceService = {
+      setNotifier: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -72,6 +86,8 @@ describe('ChatGateway', () => {
         { provide: MessageService, useValue: messageService },
         { provide: RoomService, useValue: roomService },
         { provide: SenderKeysService, useValue: senderKeysService },
+        { provide: DeviceLinkService, useValue: deviceLinkService },
+        { provide: DeviceService, useValue: deviceService },
         { provide: RedisConfigService, useValue: undefined },
       ],
     }).compile();
@@ -87,6 +103,46 @@ describe('ChatGateway', () => {
 
       expect(messageService.setServer).toHaveBeenCalledWith(mockServer);
       expect(senderKeysService.setServer).toHaveBeenCalledWith(mockServer);
+    });
+
+    it('wires notifyPeersDeviceLinked to fan-out peerDeviceLinked to each peer user room', async () => {
+      const emit = jest.fn();
+      const to = jest.fn().mockReturnValue({ emit });
+      const mockServer = { adapter: jest.fn(), to } as any;
+      roomService.getPeerUserIds.mockResolvedValue([101, 102]);
+
+      await gateway.afterInit(mockServer);
+      const notifier = deviceLinkService.setNotifier.mock.calls[0][0];
+
+      const linkedAt = '2026-05-21T12:00:00.000Z';
+      await notifier.notifyPeersDeviceLinked(42, 2, linkedAt);
+
+      expect(roomService.getPeerUserIds).toHaveBeenCalledWith(42);
+      expect(to).toHaveBeenCalledWith('user:101');
+      expect(to).toHaveBeenCalledWith('user:102');
+      expect(emit).toHaveBeenCalledTimes(2);
+      expect(emit).toHaveBeenCalledWith(ChatEvents.PeerDeviceLinked, {
+        userId: 42,
+        addedDeviceId: 2,
+        linkedAt,
+      });
+      // Must NOT broadcast to the linked user itself — they get `deviceLinked`.
+      expect(to).not.toHaveBeenCalledWith('user:42');
+    });
+
+    it('notifyPeersDeviceLinked is a no-op when the linked user has no peers', async () => {
+      const emit = jest.fn();
+      const to = jest.fn().mockReturnValue({ emit });
+      const mockServer = { adapter: jest.fn(), to } as any;
+      roomService.getPeerUserIds.mockResolvedValue([]);
+
+      await gateway.afterInit(mockServer);
+      const notifier = deviceLinkService.setNotifier.mock.calls[0][0];
+
+      await notifier.notifyPeersDeviceLinked(42, 2, '2026-05-21T12:00:00.000Z');
+
+      expect(to).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
     });
   });
 
@@ -105,6 +161,7 @@ describe('ChatGateway', () => {
         1,
         1,
         client,
+        1,
       );
     });
 
@@ -192,6 +249,7 @@ describe('ChatGateway', () => {
         'text',
         client.id,
         false,
+        undefined, // clientMessageId — absent (legacy client)
       );
     });
 

@@ -10,6 +10,8 @@ import {
 } from '@nestjs/websockets';
 import { Server } from 'socket.io';
 import {
+  forwardRef,
+  Inject,
   Logger,
   OnModuleDestroy,
   Optional,
@@ -25,6 +27,9 @@ import { SendMessageDto, SendPacketDto, RoomIdDto } from '../dto/message.dto';
 import { RedisConfigService } from '../../../config/database/redis/config.service';
 import { isCloudMode } from '../../../config/deployment-mode';
 import { SenderKeysService } from '../../sender-keys/services/sender-keys.service';
+import { DeviceLinkService } from '../../../auth/services/device-link.service';
+import { DeviceService } from '../../../auth/services/device.service';
+import type { DeviceLinkNotifier } from '../../../auth/services/device-link.service';
 import { v4 as uuidv4 } from 'uuid';
 import type { AuthenticatedSocket } from '../../../common/types/authenticated-socket';
 
@@ -68,6 +73,10 @@ export class ChatGateway
     private messageService: MessageService,
     private roomService: RoomService,
     private senderKeysService: SenderKeysService,
+    @Inject(forwardRef(() => DeviceLinkService))
+    private deviceLinkService: DeviceLinkService,
+    @Inject(forwardRef(() => DeviceService))
+    private deviceService: DeviceService,
     @Optional() private redisConfig?: RedisConfigService,
   ) {}
 
@@ -83,6 +92,90 @@ export class ChatGateway
   async afterInit(server: Server) {
     this.messageService.setServer(server);
     this.senderKeysService.setServer(server);
+
+    // Wire the device-link broadcast hooks: device-link/device services
+    // need to push `deviceLinked` / `deviceRevoked` / `senderKeysAvailable`
+    // events over the live Socket.IO server, which only the gateway holds.
+    const notifier: DeviceLinkNotifier = {
+      notifyDeviceLinked: (primaryUserId, payload) => {
+        server
+          .to(`user:${primaryUserId}`)
+          .emit(ChatEvents.DeviceLinked, payload);
+      },
+      notifyPeersDeviceRevoked: async (
+        revokedUserId,
+        revokedDeviceId,
+        revokedAt,
+      ) => {
+        // Peers = users sharing at least one room with the revoked user.
+        // Broadcast to each peer's per-user room so all their devices learn.
+        const peerIds = await this.roomService.getPeerUserIds(revokedUserId);
+        const event = {
+          self: false,
+          userId: revokedUserId,
+          revokedDeviceId,
+          revokedAt,
+        };
+        for (const peerId of peerIds) {
+          server.to(`user:${peerId}`).emit(ChatEvents.DeviceRevoked, event);
+        }
+      },
+      notifyPeersDeviceLinked: async (
+        linkedUserId,
+        addedDeviceId,
+        linkedAt,
+      ) => {
+        // Symmetric to notifyPeersDeviceRevoked: signal peers that
+        // `linkedUserId` has a new active device so they can invalidate
+        // their client-side `(userId, deviceId)` cache and fan-out to it.
+        const peerIds = await this.roomService.getPeerUserIds(linkedUserId);
+        const event = { userId: linkedUserId, addedDeviceId, linkedAt };
+        for (const peerId of peerIds) {
+          server.to(`user:${peerId}`).emit(ChatEvents.PeerDeviceLinked, event);
+        }
+      },
+      notifyDeviceItselfRevoked: async (userId, revokedDeviceId, revokedAt) => {
+        const sockets = await server.fetchSockets();
+        const targets = sockets.filter((s: any) => {
+          const u = s.user;
+          return u?.userId === userId && u?.deviceId === revokedDeviceId;
+        });
+        const payload = {
+          self: true,
+          revokedDeviceId,
+          byUserId: userId,
+          revokedAt,
+        };
+        for (const socket of targets) {
+          (socket as any).emit(ChatEvents.DeviceRevoked, payload);
+        }
+      },
+      disconnectDeviceSockets: async (userId, deviceId) => {
+        const sockets = await server.fetchSockets();
+        for (const socket of sockets) {
+          const u = (socket as any).user;
+          if (u?.userId === userId && u?.deviceId === deviceId) {
+            (socket as any).disconnect(true);
+          }
+        }
+      },
+      notifyNewDeviceSenderKeys: (userId, deviceId, rooms) => {
+        // Fire one event per room of interest. The new device queries
+        // `GET /sender-keys/:roomId` in response.
+        for (const r of rooms) {
+          // Targeted emit — we don't know the socket id yet, but the device
+          // joins per-user room on connect, so all sockets of this user
+          // receive it. The client filters by its own deviceId.
+          server.to(`user:${userId}`).emit(ChatEvents.SenderKeysAvailable, {
+            roomId: r.roomId,
+            recipientDeviceId: deviceId,
+            count: r.count,
+          });
+        }
+      },
+    };
+    this.deviceLinkService.setNotifier(notifier);
+    this.deviceService.setNotifier(notifier);
 
     // Setup Redis adapter ONLY in CLOUD mode (multi-instance Socket.IO)
     // In SELFHOSTED mode, runs in single-instance mode without Redis
@@ -137,6 +230,7 @@ export class ChatGateway
 
   async handleConnection(client: AuthenticatedSocket) {
     const userId: number = client.user?.userId;
+    const deviceId: number = client.user?.deviceId ?? 1;
     this.logger.log(`Client connected: ${client.id}, User: ${userId}`);
 
     // Auto-join user's rooms and deliver pending messages
@@ -151,8 +245,10 @@ export class ChatGateway
           void client.join(`room:${room.id}`);
           this.logger.debug(`User ${userId} auto-joined room ${room.id}`);
 
-          // Deliver pending messages for this room
-          await this.deliverPendingMessages(userId, room.id, client);
+          // Deliver pending messages for this room — scoped to this device
+          // so a different device of the same user doesn't drain its peer's
+          // per-device ciphertext.
+          await this.deliverPendingMessages(userId, deviceId, room.id, client);
 
           // Notify other members that this user came online
           // Only for rooms with sender keys enabled
@@ -182,11 +278,17 @@ export class ChatGateway
    */
   private async deliverPendingMessages(
     userId: number,
+    deviceId: number,
     roomId: number,
     socket: AuthenticatedSocket,
   ): Promise<void> {
     try {
-      await this.messageService.deliverPendingToSocket(userId, roomId, socket);
+      await this.messageService.deliverPendingToSocket(
+        userId,
+        roomId,
+        socket,
+        deviceId,
+      );
     } catch (error) {
       this.logger.error(
         `Error delivering pending messages to user ${userId}:`,
@@ -226,7 +328,8 @@ export class ChatGateway
       // Reject oversized payloads.
       // Volatile messages carry inline encrypted media, so they get a higher limit.
       // Non-volatile media must use REST /media endpoints.
-      const payloadSize = Buffer.byteLength(JSON.stringify(data.message));
+      const messageForSize = data.message ?? data.recipients;
+      const payloadSize = Buffer.byteLength(JSON.stringify(messageForSize));
       const maxSize = isVolatile
         ? MAX_WS_VOLATILE_PAYLOAD_BYTES
         : MAX_WS_PAYLOAD_BYTES;
@@ -247,6 +350,29 @@ export class ChatGateway
         return { error: 'You are not a member of this room' };
       }
 
+      // Multi-device fan-out path: caller supplied one ciphertext per
+      // (targetUser, targetDevice). Server picks the right socket for each.
+      if (data.recipients && data.recipients.length > 0) {
+        const { delivered, messageId, timestamp } =
+          await this.messageService.fanOutToRecipients(
+            data.roomId,
+            userId,
+            deviceId,
+            data.recipients,
+            data.category,
+            data.type,
+            client.id,
+            isVolatile,
+            data.metadata,
+            data.id,
+          );
+        return { success: true, delivered, messageId, timestamp };
+      }
+
+      if (!data.message) {
+        return { error: 'Either `message` or `recipients` must be set' };
+      }
+
       // Check if this is a sender key encrypted message
       const isSenderKeyMessage = data.category === 'senderkey_message';
 
@@ -259,7 +385,9 @@ export class ChatGateway
 
         // Sender key message - broadcast single ciphertext to all room members
         const envelope: MessageEnvelope = {
-          id: uuidv4(),
+          // backend-0016: honour the client-minted id when present so the
+          // sender can correlate receipts; fall back to a server uuid.
+          id: data.id ?? uuidv4(),
           roomId: data.roomId,
           senderId: userId, // CRITICAL: Include sender ID for decryption
           // Forwarded so the client can address libsignal's per-device
@@ -275,10 +403,12 @@ export class ChatGateway
           version: process.env.MESSAGE_VERSION || '0.0.1',
         };
 
-        // Deliver to room members with ack (excludes sender)
+        // Deliver to room members with ack (excludes only the sending device,
+        // so the sender's OTHER devices receive the sender-key broadcast).
         const { delivered } = await this.messageService.deliverEnvelopeToRoom(
           data.roomId,
           userId,
+          deviceId,
           ChatEvents.NewMessage,
           envelope,
           client.id,
@@ -302,6 +432,7 @@ export class ChatGateway
           data.type,
           client.id, // Pass socket ID to exclude sender from broadcast
           isVolatile,
+          data.id,
         );
 
         return {
@@ -335,7 +466,8 @@ export class ChatGateway
 
     try {
       // Reject oversized payloads
-      const payloadSize = Buffer.byteLength(JSON.stringify(data.packet));
+      const payloadForSize = data.packet ?? data.recipients;
+      const payloadSize = Buffer.byteLength(JSON.stringify(payloadForSize));
       if (payloadSize > MAX_WS_PAYLOAD_BYTES) {
         this.logger.warn(
           `User ${userId} sent oversized packet (${payloadSize} bytes), rejecting`,
@@ -352,7 +484,26 @@ export class ChatGateway
         return { error: 'You are not a member of this room' };
       }
 
-      // Send control packet (exclude sender from broadcast)
+      // Per-device fan-out path: one packet per (userId, deviceId). Used for
+      // device-targeted control packets like X3DH session establishment.
+      if (data.recipients && data.recipients.length > 0) {
+        const { delivered, packetId, timestamp } =
+          await this.messageService.fanOutPacketToRecipients(
+            data.roomId,
+            userId,
+            deviceId,
+            data.recipients,
+            client.id,
+            data.volatile,
+          );
+        return { success: true, delivered, packetId, timestamp };
+      }
+
+      if (!data.packet) {
+        return { error: 'Either `packet` or `recipients` must be set' };
+      }
+
+      // Legacy single-packet broadcast (exclude sender from broadcast)
       const packet = await this.messageService.sendControlPacket(
         data.roomId,
         userId,
@@ -480,6 +631,7 @@ export class ChatGateway
     @MessageBody() data: RoomIdDto,
   ) {
     const userId: number = client.user?.userId;
+    const deviceId: number = client.user?.deviceId ?? 1;
 
     if (!userId) {
       return { error: 'Unauthorized' };
@@ -489,6 +641,7 @@ export class ChatGateway
       const distributions = await this.senderKeysService.getPendingSenderKeys(
         data.roomId,
         userId,
+        deviceId,
       );
 
       // Emit sender keys to requesting client

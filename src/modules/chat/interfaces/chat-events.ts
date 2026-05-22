@@ -13,6 +13,10 @@ export enum ChatEvents {
   UserOnline = 'userOnline',
   RoomDeleted = 'roomDeleted',
   UserLeftRoom = 'userLeftRoom',
+  DeviceLinked = 'deviceLinked',
+  DeviceRevoked = 'deviceRevoked',
+  PeerDeviceLinked = 'peerDeviceLinked',
+  SenderKeysAvailable = 'senderKeysAvailable',
 }
 
 export interface MessageEnvelope {
@@ -30,6 +34,9 @@ export interface MessageEnvelope {
   category?: string;
   type?: string;
   version: string;
+  // Reply target — client-assigned id of the message being replied to.
+  // Forwarded from `sendMessage.metadata.id_parent`.
+  idParent?: string;
 }
 
 export interface ControlPacket {
