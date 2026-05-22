@@ -142,12 +142,40 @@ The backend is a **zero-knowledge relay**: it stores only public keys, relays op
 - **Media**: Client-encrypted `.enc` blobs stored on filesystem; ephemeral media with TTL and per-user download tracking
 - **Push**: Generic "New message" by default (no content), optional metadata with `PUSH_INCLUDE_DATA=true`
 
+### Multi-device pairing (wire v2.1)
+
+A single identity (per-user `identityPublicKey`) can be shared across up to 5 active devices. Wire contract: `_shared/api/multi-device-linking.md`. ADRs: `_shared/decisions/0001-multi-device-architecture.md`, `_shared/decisions/0003-pairing-direction-flip.md`, `_shared/decisions/0004-symmetric-safety-number.md`.
+
+Backend role is intentionally minimal — all cryptography (X25519 ECDHE → HKDF → AES-256-GCM, safety number verification) runs on-device. Direction is **new-device-shows-QR / primary-scans** (Signal Desktop / WhatsApp Web pattern). The v2.1 wire adds an intermediate `/share-pubkey` round-trip so the safety number is computed and verified **on both sides before** the encrypted payload is committed (ADR-0004).
+
+Flow:
+1. **New device** generates an X25519 ephemeral keypair and calls `POST /auth/devices/link/init` (anonymous) with the public key + optional UA metadata. Server returns `{ sessionId, expiresAt }`.
+2. **New device** renders a QR (`tillit://link?v=2&i=<sessionId>&s=<base64url(server_origin)>&e=<base64url(E_pub)>`). `E_pub` travels in-band — the server never relays it to the primary.
+3. **Primary** scans the QR, verifies `serverOrigin` matches its own server, generates its own ephemeral `P_pub`.
+4. **Primary** publishes `P_pub` via `POST /auth/devices/link/share-pubkey` (primary JWT). The server attaches `primary_user_id/primary_device_id` from the JWT, saves `P_pub`, and flips `device_link_sessions.status` from `waiting` to `pubkey-shared`. No device row is created yet, no `assignedDeviceId` emitted.
+5. **New device** polls `GET /auth/devices/link/session/:sessionId/result` and now receives `{ status: 'pubkey-shared', primaryEphemeralPublicKey, primaryUserId, identityKeyPub }` (the server looks up `identityKeyPub` from the primary's `users.identity_public_key`). Both sides compute and compare the safety number out-of-band.
+6. On Match, **primary** encrypts the identity payload with `HKDF(X25519(P_priv, E_pub))` and uploads it via `POST /auth/devices/link/complete` with `{ sessionId, encryptedPayload }` (no `primaryEphemeralPublicKey` — already known). Server requires `status='pubkey-shared'`, assigns a monotonic `deviceId` (no reuse after revoke), creates a `user_devices` row with `status='pending_link'`, and flips `status='completed'`.
+7. **New device** polls the result, receives `{ status: 'completed', encryptedPayload, primaryEphemeralPublicKey, primaryUserId, identityKeyPub, assignedDeviceId }`. One-time-use: subsequent polls return `410 SESSION_ALREADY_CONSUMED`.
+8. **New device** decrypts, validates `identityPub` from the plaintext against the `identityKeyPub` it already received at step 5 (anti-server-tamper), imports the identity into Keychain, generates its own fresh pre-keys/signed pre-key/kyber pre-keys, and calls `POST /keys`. The server flips `user_devices.status` to `active` and emits `deviceLinked` to the primary.
+
+Cap & flood control: `MULTI_DEVICE_CAP` (default 5) hard-limits active+pending_link devices per user; `MULTI_DEVICE_OPEN_TOKEN_CAP` (default 1000 in v2) is the **global soft cap** on open `waiting` sessions — protects the anonymous `/link/init` endpoint from flooding, paired with per-IP rate limiting at the controller. `DEVICE_LINK_TTL_MS` (default 300000) sets the per-step window; the result window is refreshed at `complete` time so the new device gets another full TTL to poll. A background sweeper soft-expires lapsed sessions every `DEVICE_LINK_CLEANUP_INTERVAL_MS` (default 60s) and hard-deletes them 1h later.
+
+Revocation:
+- `DELETE /auth/devices/:id` (primary-only) flips a linked device to `status='revoked'`, deletes its pre-keys, emits `deviceRevoked { self:true, ... }` to its sockets, then `deviceRevoked { self:false, ... }` to every peer sharing a room, and finally force-disconnects the device's sockets.
+- `DELETE /auth/devices/me` is the linked device's self-logout (identical effect on its row). Primary self-logout goes through `DELETE /auth/account`.
+- Subsequent authenticated requests from a revoked device's JWT return `401 DEVICE_REVOKED` (JwtStrategy + AuthenticatedSocketAdapter both enforce this).
+
+`GET /keys/:userId` now returns `{ devices: [...] }` — one bundle per active device. Top-level `signedPreKey`/`preKey`/`kyberPreKey` mirror `devices[0]` so v0.x single-device clients still work during rollout.
+
+`sendMessage` now accepts a `recipients: Array<{ userId, deviceId, ciphertext }>` field for multi-device fan-out — the gateway picks the right socket per `(userId, deviceId)`. Offline devices get their per-device ciphertext queued individually in `pending_messages`. The legacy single-`message` path is unchanged.
+
 ### Database Entities
 
-**User** (`user.entity.ts`): `id`, `identityPublicKey` (unique, base64), `registrationId`
+**User** (`user.entity.ts`): `id`, `identityPublicKey` (unique, base64). `registrationId` is per-device — see `UserDevice`.
 **Room** (`room.entity.ts`): `id`, `inviteCode`, `name`, `status` (CREATED/ACTIVE/ARCHIVED/DELETED), `idUser`, `useSenderKeys`, `administered`
 **RoomUser** (`room-user.entity.ts`): `roomId`, `userId`, `username`, `joinedAt`
-**UserDevice** (`user-device.entity.ts`): `userId` + `deviceId` (unique pair), `registrationId`, `identityPublicKey`
+**UserDevice** (`user-device.entity.ts`): `userId` + `deviceId` (unique pair), `registrationId`, `identityPublicKey`, `status` (`active`/`pending_link`/`revoked`), `deviceName`, `userAgent`, `lastActiveAt`, `revokedAt`
+**DeviceLinkSession** (`device-link-session.entity.ts`): `sessionId` (base64url 32B, unique), `primaryUserId?`/`primaryDeviceId?` (set at `/share-pubkey`), `ephemeralPublicKey` (E_pub from `/init`), `encryptedPayload?` (set at `/complete`), `primaryEphemeralPubKey?` (set at `/share-pubkey`), `assignedDeviceId?` (set at `/complete`), `status` (`waiting`/`pubkey-shared`/`completed`/`consumed`/`expired`), `expiresAt`, `consumedAt` — 5min TTL, one-time-use on `/result`, cascade on user delete
 **SignalKey** (`signal-key.entity.ts`): pre-keys (type 1), Kyber pre-keys (type 2), signed pre-keys (type 3) — all CASCADE on user delete
 **PendingMessage** (`pending-message.entity.ts`): `userId`, `roomId`, `envelope` (encrypted JSON), `expiresAt`
 **MediaBlob** (`media-blob.entity.ts`): `roomId`, `uploaderId`, `filePath`, `ephemeral`, `maxDownloads`, `downloadCount`
@@ -172,22 +200,31 @@ All endpoints require JWT authentication via `Authorization: Bearer <token>` hea
 
 **Authentication** (`/auth`):
 - `POST /auth/challenge` - Request challenge nonce (body: `{ identityPublicKey }`)
-- `POST /auth/identity` - Authenticate with signed challenge (body: `{ identityPublicKey, challengeId, challengeSignature, registrationId, deviceId, signedPreKey... }`). `challengeSignature` must sign the domain-separated message `utf8("TilliT-Auth-Challenge-v1\n" + host + "\n") || nonce`, not the raw nonce. The server validates the request `Host` header against `AUTH_ALLOWED_HOSTS`. See `_shared/api/auth-challenge-domain-separation.md`.
+- `POST /auth/identity` - Authenticate with signed challenge (body: `{ identityPublicKey, challengeId, challengeSignature, registrationId, deviceId, signedPreKey... }`). `challengeSignature` must sign the domain-separated message `utf8("TilliT-Auth-Challenge-v1\n" + host + "\n") || nonce`, not the raw nonce. The server validates the request `Host` header against `AUTH_ALLOWED_HOSTS`. **deviceId is also validated**: a new account requires `deviceId === 1` (primary); for an existing user, a non-primary `deviceId` must match an `active` or `pending_link` row in `user_devices` — unknown/revoked devices get `401`. See `_shared/api/auth-challenge-domain-separation.md`.
 - `GET /auth/status` - Server reachability + ban check (JwtAuthGuard). Returns `{ status: 'ok' }` on success, or 401 with `error: 'BANNED'` if banned (standard 401 if token invalid/missing). If server is unreachable, client handles as offline.
 - `POST /auth/refresh` - Refresh JWT token
 
-**Signal Keys** (`/signal-keys`):
-- `POST /signal-keys/upload` - Upload pre-keys and identity key for device
-- `GET /signal-keys/bundle/:userId/:deviceId` - Get key bundle for establishing session
+**Multi-device pairing** (`/auth/devices`, wire v2.1) — see `_shared/api/multi-device-linking.md` for the full wire contract and `_shared/decisions/0004-symmetric-safety-number.md` for the rationale of the symmetric safety-number step.
+- `POST /auth/devices/link/init` - **New device** starts the session (anonymous). Body: `{ ephemeralPublicKey, deviceName?, userAgent? }`. Returns `{ sessionId, expiresAt }`. Per-IP rate limit + global soft cap of `MULTI_DEVICE_OPEN_TOKEN_CAP` open `waiting` sessions → 429 `TOO_MANY_LINKS`.
+- `POST /auth/devices/link/share-pubkey` - **Primary** (JWT `deviceId === 1`) shares its `P_pub` ahead of `/complete`: `{ sessionId, primaryEphemeralPublicKey }`. Server attaches `primary_user_id/primary_device_id` from the JWT, saves `P_pub` and flips `status='pubkey-shared'`. Idempotent for the same `P_pub` (no-op); 409 `PUBKEY_MISMATCH` for a different `P_pub` or a different primary; 409 `SESSION_NOT_WAITING` if not in `waiting`; 410 `SESSION_EXPIRED` if the 5-min TTL is past. Response: `{ ok: true }`.
+- `POST /auth/devices/link/complete` - **Primary** (JWT `deviceId === 1`) deposits the ECDHE+AES-GCM ciphertext: `{ sessionId, encryptedPayload }`. Requires `status='pubkey-shared'` (409 `SESSION_NOT_PUBKEY_SHARED` otherwise). Server assigns a monotonic `deviceId`, creates a `pending_link` row, flips to `completed`. 409 `DEVICE_LIMIT_REACHED` at 5 active devices; 409 `PUBKEY_MISMATCH` if a different primary tries to commit.
+- `GET /auth/devices/link/session/:sessionId/result` - **New device** polls (anonymous, one-time-use only on `completed`). Shapes per status: `pending` → `{ status }`; `pubkey-shared` → `{ status, primaryEphemeralPublicKey, primaryUserId, identityKeyPub }` (the server looks up `identityKeyPub` from `users.identity_public_key`, so the new device can compute its own SN before /complete; 409 `PRIMARY_IDENTITY_NOT_PUBLISHED` if the primary has no identity on record); `completed` → same four fields plus `encryptedPayload` and `assignedDeviceId`. After first read with `status='completed'` the row flips to `consumed` and the ciphertext + `P_pub` are dropped. Subsequent reads return 410 `SESSION_ALREADY_CONSUMED`.
+- `GET /auth/devices` - List devices (primary-only); fields include `deviceName`, `status`, `isPrimary`, `isCurrent`, `lastSeen`, `userAgent`.
+- `DELETE /auth/devices/me` - Self-logout for any linked device (primary itself uses `DELETE /auth/account` instead).
+- `DELETE /auth/devices/:id` - Primary revokes a linked device; server drops the device's pre-keys, emits `deviceRevoked` to peers and to the revoked device itself, then force-disconnects its sockets. Subsequent authenticated requests from that JWT return 401 `DEVICE_REVOKED`.
+
+**Signal Keys** (`/keys`):
+- `POST /keys` - Upload pre-keys, identity key and registrationId for the calling device. A new linked device's row flips from `pending_link` to `active` here.
+- `GET /keys/:userId` - Fetch the user's key bundle(s). Returns `{ userId, devices: [{ deviceId, identityKey, registrationId, signedPreKey, preKey, kyberPreKey }], ... }` — one entry per active device. Top-level `signedPreKey/preKey/kyberPreKey/deviceId` mirror `devices[0]` for backward compat with v0.x single-device clients. `deviceName` is intentionally **not** exposed to peers (ADR-0001 P-2) — only the primary sees device names via `GET /auth/devices`.
 
 **Sender Keys** (`/sender-keys`):
 - `POST /sender-keys/initialize/:roomId` - Switch a room to sender-key mode (returns `distributionId`)
-- `POST /sender-keys/distribute/:roomId` - Distribute the sender's key, encrypted per-recipient
+- `POST /sender-keys/distribute/:roomId` - Distribute the sender's key. Each `distributions[]` item is `{ recipientUserId, recipientDeviceId?, encryptedSenderKey }` — multi-device callers pass one entry per `(recipientUser, recipientDevice)`. Pairing-time self-distribution to a freshly linked device is allowed (sender ≠ same `recipientDeviceId`).
 - `PUT /sender-keys/mark-delivered` - Acknowledge delivery of distributions
 - `GET /sender-keys/active/:roomId` - Get the caller's active distribution for the room
-- `GET /sender-keys/:roomId` - Retrieve pending sender-key distributions. Each item:
-  `{ id, senderUserId, senderDeviceId, distributionId, encryptedSenderKey, createdAt }`.
-  `senderDeviceId` defaults to `1` for rows written before the H-04 fix.
+- `GET /sender-keys/:roomId` - Retrieve pending sender-key distributions for the caller's device. Each item:
+  `{ id, senderUserId, senderDeviceId, recipientDeviceId, distributionId, encryptedSenderKey, createdAt }`.
+  `senderDeviceId`/`recipientDeviceId` default to `1` for rows written before the multi-device fan-out.
 - `POST /sender-keys/rotate/:roomId` - Rotate (new distribution)
 
 **Moderation** (`/moderation`):
@@ -200,8 +237,8 @@ Banned users are blocked at 3 levels: JWT strategy (all REST), auth service (log
 ### WebSocket Events
 
 **Client → Server**:
-- `sendMessage` - Send user message envelope
-- `sendPacket` - Send control packet envelope
+- `sendMessage` - Send user message envelope. Body `{ roomId, id?, message? | recipients?, category?, type?, volatile? }`. Multi-device fan-out path: pass `recipients: [{ userId, deviceId, ciphertext }]` and the server delivers one envelope per `(userId, deviceId)` socket, queuing offline devices individually. Legacy single-ciphertext path with `message` is still supported. Optional `id` (UUID) becomes `envelope.id` for every recipient — lets the sender match `delivered`/`read` receipts (`id_message = envelope.id`) against its locally stored optimistic row; falls back to a server-minted uuid when absent. Offline non-self recipients get a push notification (best-effort); the sender's own user is excluded — no self-sync push (Signal Desktop / WhatsApp Web semantics). Spec: `_shared/api/multi-device-fanout.md`.
+- `sendPacket` - Send control packet envelope. Body `{ roomId, packet? | recipients?, recipientIds?, volatile? }`. Per-device fan-out path: pass `recipients: [{ userId, deviceId, packet }]` for X3DH or other device-targeted control packets — one `newPacket` per `(userId, deviceId)` socket, offline targets queued per-`(userId, deviceId, roomId)`. Legacy single-packet broadcast with `packet + recipientIds?` is still supported for user-wide control packets (presence, etc.). Control packets never push. Spec: `_shared/api/multi-device-fanout.md`.
 - `joinRoom` - Join a room's WebSocket channel
 - `leaveRoom` - Leave a room's WebSocket channel
 
@@ -213,6 +250,10 @@ Banned users are blocked at 3 levels: JWT strategy (all REST), auth service (log
 - `userOnline` - User came online (sender key rooms only)
 - `roomDeleted` - Room was permanently deleted `{ roomId, deletedBy, timestamp }`
 - `userLeftRoom` - User permanently left an administered room `{ roomId, userId, timestamp }` — other clients should delete that user's messages locally
+- `deviceLinked` - Emitted to the primary when a new linked device finishes pairing `{ deviceId, deviceName, linkedAt }`
+- `deviceRevoked` - Emitted to peers (`{ self: false, userId, revokedDeviceId, revokedAt }`) and to the revoked device itself (`{ self: true, byUserId, revokedDeviceId, revokedAt }`)
+- `peerDeviceLinked` - Emitted to every peer (user sharing at least one room with the linked user) once a new device of that user becomes `ACTIVE`. Payload: `{ userId, addedDeviceId, linkedAt }`. NOT emitted to the linked user itself. Best-effort signal to invalidate the client-side `(userId, deviceId)` cache; offline peers re-discover the device via `GET /keys/:userId` on reconnect. Spec: `_shared/api/peer-device-linked.md`.
+- `senderKeysAvailable` - Notify a recipient (or specific recipient device) that a new sender-key distribution is pending
 
 ### Message Flow (Backend Side)
 
@@ -220,7 +261,7 @@ Banned users are blocked at 3 levels: JWT strategy (all REST), auth service (log
 
 **Sending**: Client emits `sendMessage` → backend validates room membership → generates UUID + timestamp → relays to room via `deliverToRoomWithAck()` → non-acking sockets get messages queued in `pending_messages`
 
-**Control packets**: Client emits `sendPacket` → backend relays via `sendControlPacket()` → can target specific `recipientIds` → volatile packets skip offline queue
+**Control packets**: Client emits `sendPacket` → backend relays via `sendControlPacket()` (legacy single-packet, optionally targeted via `recipientIds`) or `fanOutPacketToRecipients()` (per-device fan-out via `recipients[]`) → volatile packets skip offline queue → control packets never push
 
 **Reconnect**: On WebSocket connect → auto-joins all user's rooms → replays pending messages per room → deletes from DB only after client ack
 
@@ -252,6 +293,10 @@ All operational constants are configurable via environment variables with sensib
 | `PUSH_NOTIFICATION_SOUND` | default | Push notification sound file |
 | `THROTTLE_KEY_FETCH_PER_TARGET` | 3 | Key fetch rate limit per (requester, target) pair |
 | `AUTH_ALLOWED_HOSTS` | (derived) | Comma-separated hostnames accepted by `POST /auth/identity`. Defaults to a single host extracted from `APP_URL` or `DOMAIN`; rejects everything when nothing is configured. |
+| `MULTI_DEVICE_CAP` | 5 | Max active+pending_link devices per user (multi-device pairing) |
+| `MULTI_DEVICE_OPEN_TOKEN_CAP` | 1000 | Global soft cap on open `waiting` pairing sessions (anti-flood for the anonymous `/link/init` endpoint) |
+| `DEVICE_LINK_TTL_MS` | 300000 (5min) | TTL of a pairing session at each step (init/complete window + result window) |
+| `DEVICE_LINK_CLEANUP_INTERVAL_MS` | 60000 | Background sweeper interval for expired pairing sessions |
 
 ## Best Practices
 
