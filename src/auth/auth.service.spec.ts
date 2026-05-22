@@ -1,21 +1,26 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import {
-  UnauthorizedException,
-  ConflictException,
-  BadRequestException,
-} from '@nestjs/common';
+import { UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { User } from '../entities/user.entity';
 import { PushToken, PushProvider } from '../entities/push-token.entity';
 import { SignalKey, KeyTypeId } from '../entities/signal-key.entity';
+import {
+  UserDevice,
+  UserDeviceStatus,
+} from '../entities/user-device.entity';
 import { JwtConfigService } from '../config/jwt/config.service';
 import { ChallengeStore } from './services/challenge.store';
 import { AuthHostService } from './services/auth-host.service';
 import { BanService } from '../modules/ban/ban.service';
 import { IdentityAuthDto } from './dto/identity-auth.dto';
-import { createMockRepository, makeUser, makePushToken } from '../test/helpers';
+import {
+  createMockRepository,
+  makeUser,
+  makePushToken,
+  makeUserDevice,
+} from '../test/helpers';
 
 // Mock libsignal-client
 jest.mock('@signalapp/libsignal-client', () => ({
@@ -31,6 +36,7 @@ describe('AuthService', () => {
   let userRepo: ReturnType<typeof createMockRepository>;
   let pushTokenRepo: ReturnType<typeof createMockRepository>;
   let signalKeyRepo: ReturnType<typeof createMockRepository>;
+  let userDeviceRepo: ReturnType<typeof createMockRepository>;
   let jwtService: { sign: jest.Mock; verify: jest.Mock };
   let jwtConfig: { privateKey: string; publicKey: string; expiresIn: string };
   let challengeStore: {
@@ -58,6 +64,7 @@ describe('AuthService', () => {
     userRepo = createMockRepository();
     pushTokenRepo = createMockRepository();
     signalKeyRepo = createMockRepository();
+    userDeviceRepo = createMockRepository();
     jwtService = {
       sign: jest.fn().mockReturnValue('jwt-token'),
       verify: jest.fn().mockReturnValue({ sub: 1 }),
@@ -81,6 +88,7 @@ describe('AuthService', () => {
         { provide: getRepositoryToken(User), useValue: userRepo },
         { provide: getRepositoryToken(PushToken), useValue: pushTokenRepo },
         { provide: getRepositoryToken(SignalKey), useValue: signalKeyRepo },
+        { provide: getRepositoryToken(UserDevice), useValue: userDeviceRepo },
         { provide: JwtService, useValue: jwtService },
         { provide: JwtConfigService, useValue: jwtConfig },
         { provide: ChallengeStore, useValue: challengeStore },
@@ -116,7 +124,7 @@ describe('AuthService', () => {
     });
 
     it('should return JWT for existing user', async () => {
-      const existingUser = makeUser({ id: 1, registrationId: 12345 });
+      const existingUser = makeUser({ id: 1 });
       challengeStore.consumeChallenge.mockResolvedValue({
         nonce: 'bm9uY2U=',
         identityPublicKey: 'dGVzdC1rZXk=',
@@ -130,17 +138,112 @@ describe('AuthService', () => {
       expect(result.userId).toBe(1);
     });
 
-    it('should throw ConflictException if registrationId mismatch', async () => {
-      const existingUser = makeUser({ id: 1, registrationId: 99999 });
+    // Multi-device pairing: the new device generates its own registrationId.
+    // /auth/identity must accept a per-device value that differs from the
+    // primary's. See _shared/tasks/backend-0007-per-device-registration-id.md.
+    it('should accept a different registrationId for a linked device', async () => {
+      const existingUser = makeUser({ id: 1 });
       challengeStore.consumeChallenge.mockResolvedValue({
         nonce: 'bm9uY2U=',
         identityPublicKey: 'dGVzdC1rZXk=',
       });
       userRepo.findOne.mockResolvedValue(existingUser);
+      // backend-0014: linked device must have an active user_devices row.
+      userDeviceRepo.findOne.mockResolvedValue(
+        makeUserDevice({
+          userId: 1,
+          deviceId: 2,
+          status: UserDeviceStatus.ACTIVE,
+        }),
+      );
+
+      const result = await service.authenticateByIdentity(
+        makeDto({ deviceId: 2, registrationId: 99999 }),
+        TEST_HOST,
+      );
+
+      expect(result.accessToken).toBe('jwt-token');
+      expect(result.isNewUser).toBe(false);
+      expect(result.userId).toBe(1);
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        { sub: 1, deviceId: 2 },
+        expect.any(Object),
+      );
+    });
+
+    // backend-0014: pairing flow is allowed to authenticate while the row is
+    // still in pending_link (between completeLink and POST /keys).
+    it('should accept a linked device whose row is still pending_link', async () => {
+      const existingUser = makeUser({ id: 1 });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(existingUser);
+      userDeviceRepo.findOne.mockResolvedValue(
+        makeUserDevice({
+          userId: 1,
+          deviceId: 3,
+          status: UserDeviceStatus.PENDING_LINK,
+        }),
+      );
+
+      const result = await service.authenticateByIdentity(
+        makeDto({ deviceId: 3 }),
+        TEST_HOST,
+      );
+
+      expect(result.accessToken).toBe('jwt-token');
+    });
+
+    // backend-0014: refuse a JWT mint for a non-existent linked device.
+    it('should reject a non-primary deviceId with no user_devices row', async () => {
+      const existingUser = makeUser({ id: 1 });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(existingUser);
+      userDeviceRepo.findOne.mockResolvedValue(null);
 
       await expect(
-        service.authenticateByIdentity(makeDto(), TEST_HOST),
-      ).rejects.toThrow(ConflictException);
+        service.authenticateByIdentity(makeDto({ deviceId: 7 }), TEST_HOST),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
+    // backend-0014: refuse a JWT mint for a revoked device.
+    it('should reject a non-primary deviceId whose row is revoked', async () => {
+      const existingUser = makeUser({ id: 1 });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(existingUser);
+      userDeviceRepo.findOne.mockResolvedValue(
+        makeUserDevice({
+          userId: 1,
+          deviceId: 4,
+          status: UserDeviceStatus.REVOKED,
+        }),
+      );
+
+      await expect(
+        service.authenticateByIdentity(makeDto({ deviceId: 4 }), TEST_HOST),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
+    // backend-0014: an account must be created from the primary device.
+    it('should reject a new user with a non-primary deviceId', async () => {
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.authenticateByIdentity(makeDto({ deviceId: 2 }), TEST_HOST),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(userRepo.save).not.toHaveBeenCalled();
     });
 
     it('should throw BadRequestException if challenge is invalid/expired', async () => {

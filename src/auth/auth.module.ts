@@ -1,13 +1,16 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
+import { DevicesController } from './devices.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { ChallengeStore } from './services/challenge.store';
 import { AuthHostService } from './services/auth-host.service';
 import { AccountDeletionService } from './services/account-deletion.service';
+import { DeviceLinkService } from './services/device-link.service';
+import { DeviceService } from './services/device.service';
 import { JwtAuthAllowBannedGuard } from './guards/jwt-auth-allow-banned.guard';
 import { User } from '../entities/user.entity';
 import { PushToken } from '../entities/push-token.entity';
@@ -18,6 +21,8 @@ import { PendingMessage } from '../entities/pending-message.entity';
 import { MediaBlob } from '../entities/media-blob.entity';
 import { Report } from '../entities/report.entity';
 import { SenderKeyDistribution } from '../entities/sender-key-distribution.entity';
+import { UserDevice } from '../entities/user-device.entity';
+import { DeviceLinkSession } from '../entities/device-link-session.entity';
 import { JwtConfigModule } from '../config/jwt/config.module';
 import { JwtConfigService } from '../config/jwt/config.service';
 import { RedisConfigModule } from '../config/database/redis/config.module';
@@ -55,10 +60,12 @@ const conditionalProviders = isCloudMode() ? [RedisKeystore] : [];
       MediaBlob,
       Report,
       SenderKeyDistribution,
+      UserDevice,
+      DeviceLinkSession,
     ]),
     JwtConfigModule,
     MediaConfigModule,
-    ChatModule,
+    forwardRef(() => ChatModule),
     ...conditionalImports,
   ],
   providers: [
@@ -67,10 +74,12 @@ const conditionalProviders = isCloudMode() ? [RedisKeystore] : [];
     ChallengeStore,
     AuthHostService,
     AccountDeletionService,
+    DeviceLinkService,
+    DeviceService,
     JwtAuthAllowBannedGuard,
     ...conditionalProviders,
   ],
-  controllers: [AuthController],
-  exports: [AuthService, JwtModule],
+  controllers: [AuthController, DevicesController],
+  exports: [AuthService, JwtModule, DeviceLinkService, DeviceService],
 })
 export class AuthModule {}

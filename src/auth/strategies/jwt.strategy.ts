@@ -3,12 +3,14 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Strategy, ExtractJwt } from 'passport-jwt';
 import { JwtConfigService } from '../../config/jwt/config.service';
 import { BanService } from '../../modules/ban/ban.service';
+import { DeviceLinkService } from '../services/device-link.service';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
     private jwtConfig: JwtConfigService,
     private banService: BanService,
+    private deviceLinkService: DeviceLinkService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -32,6 +34,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       typeof payload.deviceId === 'number' && payload.deviceId > 0
         ? payload.deviceId
         : 1;
+
+    // A revoked device may still hold a valid JWT (it expires only on TTL).
+    // Force logout by rejecting the token with a distinct error code so the
+    // client can wipe local state instead of retrying.
+    if (await this.deviceLinkService.isDeviceRevoked(payload.sub, deviceId)) {
+      throw new UnauthorizedException('Device revoked', 'DEVICE_REVOKED');
+    }
 
     return {
       userId: payload.sub,

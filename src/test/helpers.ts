@@ -105,7 +105,6 @@ export function makeUser(overrides: Partial<User> = {}): User {
   return {
     id: 1,
     identityPublicKey: 'dGVzdC1rZXk=',
-    registrationId: 12345,
     createdAt: new Date(),
     updatedAt: new Date(),
     roomMemberships: [],

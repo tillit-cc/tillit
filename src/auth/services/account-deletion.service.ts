@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
 import * as fs from 'fs';
@@ -53,6 +53,7 @@ export class AccountDeletionService {
     @InjectRepository(SenderKeyDistribution)
     private readonly skdRepo: Repository<SenderKeyDistribution>,
     private readonly dataSource: DataSource,
+    @Inject(forwardRef(() => MessageService))
     private readonly messageService: MessageService,
     private readonly banService: BanService,
     private readonly mediaConfig: MediaConfigService,

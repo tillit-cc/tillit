@@ -3,16 +3,19 @@ import { IoAdapter } from '@nestjs/platform-socket.io';
 import { Server } from 'socket.io';
 import { AuthService } from '../auth/auth.service';
 import { BanService } from '../modules/ban/ban.service';
+import { DeviceLinkService } from '../auth/services/device-link.service';
 
 export class AuthenticatedSocketAdapter extends IoAdapter {
   private authService: AuthService;
   private banService: BanService;
+  private deviceLinkService: DeviceLinkService;
   private readonly logger = new Logger(AuthenticatedSocketAdapter.name);
 
   constructor(private app: INestApplicationContext) {
     super(app);
     this.authService = this.app.get(AuthService);
     this.banService = this.app.get(BanService);
+    this.deviceLinkService = this.app.get(DeviceLinkService);
   }
 
   createIOServer(port: number, options?: any) {
@@ -59,6 +62,14 @@ export class AuthenticatedSocketAdapter extends IoAdapter {
           typeof payload.deviceId === 'number' && payload.deviceId > 0
             ? payload.deviceId
             : 1;
+
+        // Revoked device — surface a distinct error so the client can
+        // wipe local state and stop reconnecting.
+        if (
+          await this.deviceLinkService.isDeviceRevoked(payload.sub, deviceId)
+        ) {
+          return next(new Error('DEVICE_REVOKED'));
+        }
 
         // Attach user info to socket
         socket.user = {

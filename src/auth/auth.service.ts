@@ -1,7 +1,6 @@
 import {
   Injectable,
   UnauthorizedException,
-  ConflictException,
   BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -11,11 +10,16 @@ import { PublicKey } from '@signalapp/libsignal-client';
 import { User } from '../entities/user.entity';
 import { PushToken, PushProvider } from '../entities/push-token.entity';
 import { SignalKey, KeyTypeId } from '../entities/signal-key.entity';
+import {
+  UserDevice,
+  UserDeviceStatus,
+} from '../entities/user-device.entity';
 import { JwtConfigService } from '../config/jwt/config.service';
 import { IdentityAuthDto, IdentityAuthResponse } from './dto/identity-auth.dto';
 import { ChallengeStore } from './services/challenge.store';
 import { AuthHostService } from './services/auth-host.service';
 import { BanService } from '../modules/ban/ban.service';
+import { PRIMARY_DEVICE_ID } from './dto/device-link.dto';
 
 @Injectable()
 export class AuthService {
@@ -26,6 +30,8 @@ export class AuthService {
     private pushTokenRepository: Repository<PushToken>,
     @InjectRepository(SignalKey)
     private signalKeyRepository: Repository<SignalKey>,
+    @InjectRepository(UserDevice)
+    private userDeviceRepository: Repository<UserDevice>,
     private jwtService: JwtService,
     private jwtConfig: JwtConfigService,
     private challengeStore: ChallengeStore,
@@ -57,24 +63,42 @@ export class AuthService {
     let banned = false;
 
     if (!user) {
-      // 3. Create new user
+      // 3. Create new user — first account always starts from the primary
+      // device. A linked device can never bootstrap a brand-new user row.
+      if (dto.deviceId !== PRIMARY_DEVICE_ID) {
+        throw new UnauthorizedException('Invalid device for new account');
+      }
       user = this.userRepository.create({
         identityPublicKey: dto.identityPublicKey,
-        registrationId: dto.registrationId,
       });
       await this.userRepository.save(user);
       isNewUser = true;
     } else {
       // 3b. Check if existing user is banned
       banned = await this.banService.isUserBanned(user.id);
+    }
 
-      // 4. Existing user - verify consistency
-      if (user.registrationId !== dto.registrationId) {
-        throw new ConflictException(
-          'Identity mismatch: registrationId does not match existing user',
-        );
+    // 4. Validate `dto.deviceId` against `user_devices`. The JWT carries
+    // deviceId and DevicesController gates primary-only actions on
+    // `deviceId === PRIMARY_DEVICE_ID`, so this is a privilege boundary:
+    // a linked device cannot self-promote to primary by claiming
+    // `deviceId: 1` in /auth/identity. The primary itself is always
+    // allowed (it may not have an explicit row in some legacy states).
+    if (!isNewUser && dto.deviceId !== PRIMARY_DEVICE_ID) {
+      const device = await this.userDeviceRepository.findOne({
+        where: { userId: user.id, deviceId: dto.deviceId },
+      });
+      const allowed =
+        device?.status === UserDeviceStatus.ACTIVE ||
+        device?.status === UserDeviceStatus.PENDING_LINK;
+      if (!allowed) {
+        throw new UnauthorizedException('Unknown or revoked device');
       }
     }
+    // `registrationId` is per-device — validated/upserted in `POST /keys`
+    // against `user_devices`. Multi-device pairing brings up a new device
+    // with a fresh registrationId that intentionally differs from the
+    // primary's (see _shared/api/multi-device-linking.md).
 
     // 5. Save/update signed pre-key (skip for banned users)
     if (!banned) {
@@ -109,7 +133,6 @@ export class AuthService {
     if (!user) {
       user = this.userRepository.create({
         identityPublicKey: dto.identityPublicKey,
-        registrationId: dto.registrationId,
       });
       await this.userRepository.save(user);
       isNewUser = true;
