@@ -14,11 +14,15 @@ import { PushToken } from '../../src/entities/push-token.entity';
 import { PendingMessage } from '../../src/entities/pending-message.entity';
 import { SignalKey } from '../../src/entities/signal-key.entity';
 import { SignalKeyType } from '../../src/entities/signal-key-type.entity';
-import { UserDevice } from '../../src/entities/user-device.entity';
+import {
+  UserDevice,
+  UserDeviceStatus,
+} from '../../src/entities/user-device.entity';
 import { MediaBlob } from '../../src/entities/media-blob.entity';
 import { MediaDownload } from '../../src/entities/media-download.entity';
 import { SenderKeyDistribution } from '../../src/entities/sender-key-distribution.entity';
 import { SenderKeyMetadata } from '../../src/entities/sender-key-metadata.entity';
+import { DeviceLinkSession } from '../../src/entities/device-link-session.entity';
 
 // Services & Modules
 import { ChatGateway } from '../../src/modules/chat/gateways/chat.gateway';
@@ -37,6 +41,8 @@ import { SenderKeysService } from '../../src/modules/sender-keys/services/sender
 import { RedisConfigService } from '../../src/config/database/redis/config.service';
 import { AuthenticatedSocketAdapter } from '../../src/sockets/authenticated-socket.adapter';
 import { BanService } from '../../src/modules/ban/ban.service';
+import { DeviceLinkService } from '../../src/auth/services/device-link.service';
+import { DeviceService } from '../../src/auth/services/device.service';
 import { DataSource } from 'typeorm';
 
 const ALL_ENTITIES = [
@@ -52,6 +58,7 @@ const ALL_ENTITIES = [
   MediaDownload,
   SenderKeyDistribution,
   SenderKeyMetadata,
+  DeviceLinkSession,
 ];
 
 /**
@@ -74,13 +81,22 @@ export interface TestApp {
   dataSource: DataSource;
   url: string;
   close: () => Promise<void>;
-  seedUser: (identityKey?: string, regId?: number) => Promise<User>;
-  seedRoom: (creatorId: number, name?: string) => Promise<Room>;
+  seedUser: (identityKey?: string) => Promise<User>;
+  seedRoom: (
+    creatorId: number,
+    name?: string,
+    options?: { useSenderKeys?: boolean },
+  ) => Promise<Room>;
   addUserToRoom: (
     roomId: number,
     userId: number,
     username?: string,
   ) => Promise<void>;
+  seedDevice: (
+    userId: number,
+    deviceId: number,
+    status?: UserDeviceStatus,
+  ) => Promise<UserDevice>;
   getToken: (userId: number, deviceId?: number) => string;
   createAuthenticatedClient: (token: string) => ClientSocket;
 }
@@ -169,6 +185,23 @@ export async function createTestApp(): Promise<TestApp> {
           listBannedUsers: jest.fn().mockResolvedValue([]),
         },
       },
+      {
+        // DeviceLinkService is built on top of the DB layer; the e2e tests
+        // don't exercise pairing, so a thin stub is enough to satisfy the
+        // gateway/JWT strategy hookups (revocation check returns false).
+        provide: DeviceLinkService,
+        useValue: {
+          setNotifier: jest.fn(),
+          isDeviceRevoked: jest.fn().mockResolvedValue(false),
+          markDeviceActiveAfterKeyUpload: jest
+            .fn()
+            .mockResolvedValue(undefined),
+        },
+      },
+      {
+        provide: DeviceService,
+        useValue: { setNotifier: jest.fn() },
+      },
     ],
   }).compile();
 
@@ -205,20 +238,41 @@ export async function createTestApp(): Promise<TestApp> {
     );
   };
 
-  const seedUser = async (
-    identityKey?: string,
-    regId?: number,
-  ): Promise<User> => {
+  const seedDevice = async (
+    userId: number,
+    deviceId: number,
+    status: UserDeviceStatus = UserDeviceStatus.ACTIVE,
+  ): Promise<UserDevice> => {
+    const repo = dataSource.getRepository(UserDevice);
+    const row = repo.create({
+      userId,
+      deviceId,
+      registrationId: 1000 + deviceId,
+      identityPublicKey: crypto.randomBytes(32).toString('base64'),
+      status,
+    });
+    return repo.save(row);
+  };
+
+  const seedUser = async (identityKey?: string): Promise<User> => {
     const userRepo = dataSource.getRepository(User);
     const user = userRepo.create({
       identityPublicKey:
         identityKey || crypto.randomBytes(32).toString('base64'),
-      registrationId: regId || Math.floor(Math.random() * 100000),
     });
-    return userRepo.save(user);
+    const saved = await userRepo.save(user);
+    // Primary device is always present in real deployments — seed it so the
+    // room-broadcast offline path (RoomService.getActiveDevices) sees the
+    // single-device callers used by the older tests.
+    await seedDevice(saved.id, 1);
+    return saved;
   };
 
-  const seedRoom = async (creatorId: number, name?: string): Promise<Room> => {
+  const seedRoom = async (
+    creatorId: number,
+    name?: string,
+    options?: { useSenderKeys?: boolean },
+  ): Promise<Room> => {
     const roomRepo = dataSource.getRepository(Room);
     const room = roomRepo.create({
       inviteCode: crypto.randomBytes(4).toString('hex'),
@@ -226,6 +280,7 @@ export async function createTestApp(): Promise<TestApp> {
       status: 1, // ACTIVE
       idUser: creatorId,
       administered: false,
+      useSenderKeys: options?.useSenderKeys ?? false,
     });
     return roomRepo.save(room);
   };
@@ -269,6 +324,7 @@ export async function createTestApp(): Promise<TestApp> {
     seedUser,
     seedRoom,
     addUserToRoom,
+    seedDevice,
     getToken,
     createAuthenticatedClient,
   };
