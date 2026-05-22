@@ -1,10 +1,14 @@
 import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { SignalKey, KeyTypeId } from '../../../entities/signal-key.entity';
 import { User } from '../../../entities/user.entity';
-import { UserDevice } from '../../../entities/user-device.entity';
+import {
+  UserDevice,
+  UserDeviceStatus,
+} from '../../../entities/user-device.entity';
 import { KeyDto, KeyStatusDto, SignedKeyDto } from '../dto/keys.dto';
+import { DeviceLinkService } from '../../../auth/services/device-link.service';
 
 @Injectable()
 export class KeysService {
@@ -18,6 +22,7 @@ export class KeysService {
     @InjectRepository(UserDevice)
     private userDeviceRepository: Repository<UserDevice>,
     private dataSource: DataSource,
+    private deviceLinkService: DeviceLinkService,
   ) {}
 
   /**
@@ -91,6 +96,17 @@ export class KeysService {
         }),
       );
       await this.signalKeyRepository.save(keys);
+    }
+
+    // Multi-device pairing: a new device uploads its bundle right after
+    // consuming the provisioning payload. Flip the row from 'pending_link'
+    // to 'active' so peers can start fetching its bundle via /keys/:userId
+    // and the primary's UI updates.
+    if (deviceId !== 1) {
+      await this.deviceLinkService.markDeviceActiveAfterKeyUpload(
+        userId,
+        deviceId,
+      );
     }
   }
 
@@ -179,6 +195,157 @@ export class KeysService {
       identityKeyPresent,
       signedPreKeyPresent,
     };
+  }
+
+  /**
+   * Multi-device fan-out: return one bundle per active device.
+   *
+   * Each device contributes its own signed pre-key, kyber pre-key and pre-key
+   * (consumed atomically inside a per-device transaction). The `identityKey`
+   * is user-level — every entry carries the same value so callers can also
+   * verify it against the value used during pairing (safety number check).
+   */
+  async getAvailableKeysForUserDevices(userId: number): Promise<{
+    devices: Array<{
+      deviceId: number;
+      registrationId: number | null;
+      identityKey: string | null;
+      signedPreKey: {
+        keyId: number;
+        keyData: string;
+        signature: string | null;
+        deviceId: number;
+      } | null;
+      preKey: {
+        keyId: number;
+        keyData: string;
+        deviceId: number;
+      } | null;
+      kyberPreKey: {
+        keyId: number;
+        keyData: string;
+        signature: string | null;
+        deviceId: number;
+      } | null;
+    }>;
+  }> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    const identityKey = user?.identityPublicKey ?? null;
+
+    // Active devices only — revoked/pending_link are filtered out so peers
+    // never try to start a session with a device that can't decrypt.
+    const activeDevices = await this.userDeviceRepository.find({
+      where: { userId, status: UserDeviceStatus.ACTIVE },
+      order: { deviceId: 'ASC' },
+    });
+
+    if (activeDevices.length === 0) {
+      // Backward compat: pre-multi-device users have no `status` column
+      // populated yet (or have legacy rows with status='active' by default).
+      // Falling through here means the response is `{ devices: [] }` which is
+      // valid — the client treats it as "no bundles available".
+      return { devices: [] };
+    }
+
+    const devices = [];
+    for (const device of activeDevices) {
+      const bundle = await this.consumeBundleForDevice(userId, device.deviceId);
+      // deviceName is intentionally omitted — ADR-0001 P-2: it must never
+      // leak to peers, only the primary sees it via GET /auth/devices.
+      devices.push({
+        deviceId: device.deviceId,
+        registrationId: device.registrationId || null,
+        identityKey,
+        signedPreKey: bundle.signedPreKey
+          ? {
+              keyId: bundle.signedPreKey.keyId,
+              keyData: bundle.signedPreKey.keyData,
+              signature: bundle.signedPreKey.keySignature ?? null,
+              deviceId: device.deviceId,
+            }
+          : null,
+        preKey: bundle.preKey
+          ? {
+              keyId: bundle.preKey.keyId,
+              keyData: bundle.preKey.keyData,
+              deviceId: device.deviceId,
+            }
+          : null,
+        kyberPreKey: bundle.kyberPreKey
+          ? {
+              keyId: bundle.kyberPreKey.keyId,
+              keyData: bundle.kyberPreKey.keyData,
+              signature: bundle.kyberPreKey.keySignature ?? null,
+              deviceId: device.deviceId,
+            }
+          : null,
+      });
+
+      // Touch lastActive — call here so /keys/:userId acts as a presence
+      // signal for the primary device's `lastSeen` column in the listing.
+      device.lastActiveAt = new Date();
+      await this.userDeviceRepository.save(device);
+    }
+
+    return { devices };
+  }
+
+  /**
+   * Consume one pre-key + kyber + return the signed pre-key for a single
+   * (userId, deviceId) inside a transaction (race-safe).
+   */
+  private async consumeBundleForDevice(
+    userId: number,
+    deviceId: number,
+  ): Promise<{
+    signedPreKey: SignalKey | null;
+    preKey: SignalKey | null;
+    kyberPreKey: SignalKey | null;
+  }> {
+    const deviceIdStr = String(deviceId);
+    const signedPreKey = await this.signalKeyRepository.findOne({
+      where: {
+        userId,
+        deviceId: deviceIdStr,
+        keyTypeId: KeyTypeId.SIGNED_PRE_KEY,
+      },
+      order: { createdAt: 'DESC' },
+    });
+
+    const { preKey, kyberPreKey } = await this.dataSource.transaction(
+      async (manager) => {
+        const keyRepo = manager.getRepository(SignalKey);
+        const pk = await keyRepo.findOne({
+          where: {
+            userId,
+            deviceId: deviceIdStr,
+            keyTypeId: KeyTypeId.PRE_KEY,
+            consumed: false,
+          },
+          order: { createdAt: 'ASC' },
+        });
+        if (pk) {
+          pk.consumed = true;
+          await keyRepo.save(pk);
+        }
+        const kpk = await keyRepo.findOne({
+          where: {
+            userId,
+            deviceId: deviceIdStr,
+            keyTypeId: KeyTypeId.KYBER_PRE_KEY,
+            consumed: false,
+          },
+          order: { createdAt: 'ASC' },
+        });
+        if (kpk) {
+          kpk.consumed = true;
+          await keyRepo.save(kpk);
+        }
+        return { preKey: pk, kyberPreKey: kpk };
+      },
+    );
+
+    return { signedPreKey, preKey, kyberPreKey };
   }
 
   /**

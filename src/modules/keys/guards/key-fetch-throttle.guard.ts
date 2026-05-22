@@ -8,7 +8,7 @@ import {
 
 const WINDOW_MS = 60_000;
 const MAX_REQUESTS = parseInt(
-  process.env.THROTTLE_KEY_FETCH_PER_TARGET || '3',
+  process.env.THROTTLE_KEY_FETCH_PER_TARGET || '30',
   10,
 );
 
@@ -32,6 +32,10 @@ export class KeyFetchThrottleGuard implements CanActivate {
     const req = context.switchToHttp().getRequest();
     const requesterId = req.user?.userId ?? req.ip;
     const targetUserId = req.params?.id_user ?? 'unknown';
+
+    // Self-fanout (own device list lookup) is not enumeration.
+    if (String(requesterId) === String(targetUserId)) return true;
+
     const key = `key-fetch:${requesterId}:${targetUserId}`;
     const now = Date.now();
 

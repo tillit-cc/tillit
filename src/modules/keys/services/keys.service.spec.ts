@@ -6,6 +6,7 @@ import { KeysService } from './keys.service';
 import { SignalKey, KeyTypeId } from '../../../entities/signal-key.entity';
 import { User } from '../../../entities/user.entity';
 import { UserDevice } from '../../../entities/user-device.entity';
+import { DeviceLinkService } from '../../../auth/services/device-link.service';
 import {
   createMockRepository,
   makeUser,
@@ -20,6 +21,7 @@ describe('KeysService', () => {
   let userDeviceRepo: ReturnType<typeof createMockRepository>;
   let txKeyRepo: ReturnType<typeof createMockRepository>;
   let mockDataSource: { transaction: jest.Mock };
+  let deviceLinkService: { markDeviceActiveAfterKeyUpload: jest.Mock };
 
   beforeEach(async () => {
     signalKeyRepo = createMockRepository();
@@ -33,6 +35,10 @@ describe('KeysService', () => {
       ),
     };
 
+    deviceLinkService = {
+      markDeviceActiveAfterKeyUpload: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         KeysService,
@@ -40,6 +46,7 @@ describe('KeysService', () => {
         { provide: getRepositoryToken(User), useValue: userRepo },
         { provide: getRepositoryToken(UserDevice), useValue: userDeviceRepo },
         { provide: DataSource, useValue: mockDataSource },
+        { provide: DeviceLinkService, useValue: deviceLinkService },
       ],
     }).compile();
 

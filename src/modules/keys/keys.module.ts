@@ -7,11 +7,13 @@ import { UserDevice } from '../../entities/user-device.entity';
 import { KeysService } from './services/keys.service';
 import { KeysController } from './controllers/keys.controller';
 import { ChatModule } from '../chat/chat.module';
+import { AuthModule } from '../../auth/auth.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([SignalKey, SignalKeyType, User, UserDevice]),
     ChatModule,
+    AuthModule,
   ],
   providers: [KeysService],
   controllers: [KeysController],

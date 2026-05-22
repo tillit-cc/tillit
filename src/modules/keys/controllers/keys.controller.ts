@@ -67,7 +67,13 @@ export class KeysController {
 
   /**
    * GET /keys/:id_user
-   * Get and consume pre-keys for a specific user
+   *
+   * Multi-device aware bundle endpoint. Returns one bundle per active device
+   * under `devices: [...]`. Backward-compat fields at the top level mirror
+   * the first device's bundle so legacy single-device clients (which read
+   * `signedPreKey`/`preKey`/`kyberPreKey` directly) keep working without
+   * needing an immediate upgrade. Once every consumer reads `devices[]`
+   * those top-level fields can be retired.
    */
   @Throttle({
     default: {
@@ -89,38 +95,23 @@ export class KeysController {
       throw new ForbiddenException('Cannot fetch keys for this user');
     }
 
-    const keys = await this.keysService.getAvailableKeysForUser(targetUserId);
-    const deviceId = keys.userDevice?.deviceId ?? null;
+    const { devices } =
+      await this.keysService.getAvailableKeysForUserDevices(targetUserId);
 
+    const head = devices[0] ?? null;
     return {
       userId: targetUserId,
-      deviceId,
-      registrationId: keys.userDevice?.registrationId ?? null,
-      identityPublicKey: keys.userDevice?.identityPublicKey ?? null,
-      name: keys.userDevice?.name ?? null,
-      signedPreKey: keys.signedPreKey
-        ? {
-            keyId: keys.signedPreKey.keyId,
-            keyData: keys.signedPreKey.keyData,
-            signature: keys.signedPreKey.keySignature,
-            deviceId: Number(keys.signedPreKey.deviceId),
-          }
-        : null,
-      preKey: keys.preKey
-        ? {
-            keyId: keys.preKey.keyId,
-            keyData: keys.preKey.keyData,
-            deviceId: Number(keys.preKey.deviceId),
-          }
-        : null,
-      kyberPreKey: keys.kyberPreKey
-        ? {
-            keyId: keys.kyberPreKey.keyId,
-            keyData: keys.kyberPreKey.keyData,
-            signature: keys.kyberPreKey.keySignature,
-            deviceId: Number(keys.kyberPreKey.deviceId),
-          }
-        : null,
+      // Top-level fields preserved for v0.x clients — they read the first
+      // device. Multi-device-aware clients consume `devices[]` instead.
+      // `deviceName`/`name` deliberately omitted — ADR-0001 P-2 forbids
+      // leaking device names to peers.
+      deviceId: head?.deviceId ?? null,
+      registrationId: head?.registrationId ?? null,
+      identityPublicKey: head?.identityKey ?? null,
+      signedPreKey: head?.signedPreKey ?? null,
+      preKey: head?.preKey ?? null,
+      kyberPreKey: head?.kyberPreKey ?? null,
+      devices,
     };
   }
 }
