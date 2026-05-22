@@ -45,7 +45,10 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-beta') }}
+          flavor: |
+            latest=false
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -82,7 +85,10 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-beta') }}
+          flavor: |
+            latest=false
 
       - name: Build and push Caddy image
         if: steps.sidecar-changes.outputs.caddy == 'true' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
@@ -107,7 +113,10 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-beta') }}
+          flavor: |
+            latest=false
 
       - name: Build and push Tor image
         if: steps.sidecar-changes.outputs.tor == 'true' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
@@ -132,7 +141,10 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-beta') }}
+          flavor: |
+            latest=false
 
       - name: Build and push mDNS image
         if: steps.sidecar-changes.outputs.mdns == 'true' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
