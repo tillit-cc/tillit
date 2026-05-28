@@ -318,6 +318,114 @@ describe('AuthService', () => {
     });
   });
 
+  describe('authenticateByIdentity — per-device auth (ADR-0010)', () => {
+    const { PublicKey } = require('@signalapp/libsignal-client');
+
+    afterEach(() => {
+      // Restore the default "verify → true" mock so other suites are unaffected.
+      PublicKey.deserialize.mockReturnValue({
+        verify: jest.fn().mockReturnValue(true),
+      });
+    });
+
+    it('requires and verifies the device-auth signature when one is registered', async () => {
+      PublicKey.deserialize.mockReturnValue({
+        verify: jest.fn().mockReturnValue(true),
+      });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+      userDeviceRepo.findOne.mockResolvedValue(
+        makeUserDevice({
+          userId: 1,
+          deviceId: 1,
+          authPublicKey: 'device-auth-pub',
+        }),
+      );
+
+      const result = await service.authenticateByIdentity(
+        makeDto({ deviceId: 1, deviceAuthSignature: 'valid-sig' }),
+        TEST_HOST,
+      );
+
+      expect(result.accessToken).toBe('jwt-token');
+    });
+
+    it('blocks a linked device claiming deviceId=1 with an invalid device-auth signature (closes #4)', async () => {
+      // Identity signature valid (shared key), but the device-auth signature
+      // fails — a linked device cannot sign for device 1's auth key.
+      PublicKey.deserialize
+        .mockReturnValueOnce({ verify: jest.fn().mockReturnValue(true) })
+        .mockReturnValueOnce({ verify: jest.fn().mockReturnValue(false) });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+      userDeviceRepo.findOne.mockResolvedValue(
+        makeUserDevice({
+          userId: 1,
+          deviceId: 1,
+          authPublicKey: 'primary-auth-pub',
+        }),
+      );
+
+      await expect(
+        service.authenticateByIdentity(
+          makeDto({ deviceId: 1, deviceAuthSignature: 'forged' }),
+          TEST_HOST,
+        ),
+      ).rejects.toMatchObject({ response: { error: 'DEVICE_AUTH_INVALID' } });
+    });
+
+    it('rejects when the device-auth signature is missing for a bound device', async () => {
+      PublicKey.deserialize.mockReturnValue({
+        verify: jest.fn().mockReturnValue(true),
+      });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+      userDeviceRepo.findOne.mockResolvedValue(
+        makeUserDevice({
+          userId: 1,
+          deviceId: 1,
+          authPublicKey: 'primary-auth-pub',
+        }),
+      );
+
+      await expect(
+        service.authenticateByIdentity(makeDto({ deviceId: 1 }), TEST_HOST),
+      ).rejects.toMatchObject({ response: { error: 'DEVICE_AUTH_INVALID' } });
+    });
+
+    it('rejects a device with no registered auth key when DEVICE_AUTH_REQUIRED=true', async () => {
+      const prev = process.env.DEVICE_AUTH_REQUIRED;
+      process.env.DEVICE_AUTH_REQUIRED = 'true';
+      PublicKey.deserialize.mockReturnValue({
+        verify: jest.fn().mockReturnValue(true),
+      });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+      userDeviceRepo.findOne.mockResolvedValue(
+        makeUserDevice({ userId: 1, deviceId: 1, authPublicKey: null }),
+      );
+
+      await expect(
+        service.authenticateByIdentity(makeDto({ deviceId: 1 }), TEST_HOST),
+      ).rejects.toMatchObject({ response: { error: 'DEVICE_AUTH_REQUIRED' } });
+
+      if (prev === undefined) delete process.env.DEVICE_AUTH_REQUIRED;
+      else process.env.DEVICE_AUTH_REQUIRED = prev;
+    });
+  });
+
   describe('generateToken', () => {
     it('should call jwtService.sign with sub + deviceId and RS256', () => {
       const user = makeUser({ id: 42 });
