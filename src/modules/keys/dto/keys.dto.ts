@@ -2,6 +2,7 @@ import {
   IsString,
   IsNumber,
   IsArray,
+  IsBoolean,
   ValidateNested,
   IsOptional,
   ArrayMaxSize,
@@ -60,6 +61,19 @@ export class UploadKeysDto {
   @ValidateNested({ each: true })
   @Type(() => KeyDto)
   kyberPreKeys?: KeyDto[];
+
+  // Per-device server-auth (ADR-0010): libsignal Curve25519 public key bound to
+  // (userId, deviceId). TOFU on first upload; immutable thereafter.
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  deviceAuthPublicKey?: string;
+
+  // Primary recovery (deviceId=1 only): re-bind the device-auth key and revoke
+  // all linked devices. See ADR-0010 OQ-1.
+  @IsOptional()
+  @IsBoolean()
+  recoverPrimary?: boolean;
 }
 
 export class KeyStatusDto {

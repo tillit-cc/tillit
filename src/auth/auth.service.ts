@@ -48,8 +48,13 @@ export class AuthService {
     dto: IdentityAuthDto,
     expectedHost: string,
   ): Promise<IdentityAuthResponse> {
-    // 1. Verify challenge signature (proof of private key possession)
-    await this.verifyChallengeSignature(dto, expectedHost);
+    // 1. Verify challenge signature (proof of private key possession).
+    // Returns the domain-separated message so we can also verify the
+    // per-device-auth signature over the same bytes (ADR-0010).
+    const challengeMessage = await this.verifyChallengeSignature(
+      dto,
+      expectedHost,
+    );
 
     // 2. Look for existing user by identity public key
     let user = await this.userRepository.findOne({
@@ -75,21 +80,35 @@ export class AuthService {
       banned = await this.banService.isUserBanned(user.id);
     }
 
-    // 4. Validate `dto.deviceId` against `user_devices`. The JWT carries
-    // deviceId and DevicesController gates primary-only actions on
-    // `deviceId === PRIMARY_DEVICE_ID`, so this is a privilege boundary:
-    // a linked device cannot self-promote to primary by claiming
-    // `deviceId: 1` in /auth/identity. The primary itself is always
-    // allowed (it may not have an explicit row in some legacy states).
-    if (!isNewUser && dto.deviceId !== PRIMARY_DEVICE_ID) {
+    // 4. Per-device authentication (ADR-0010). Once a device has a registered
+    // device-auth key, the login challenge MUST also carry a valid
+    // `deviceAuthSignature` for that device — binding `deviceId` to a key only
+    // that device holds. A linked device (which shares the identity key) can
+    // therefore no longer claim `deviceId: 1` and self-promote to primary
+    // (finding #4). Before a key is bound we stay in transition mode: the
+    // legacy deviceId check applies, unless DEVICE_AUTH_REQUIRED forces upgrade.
+    if (!isNewUser) {
       const device = await this.userDeviceRepository.findOne({
         where: { userId: user.id, deviceId: dto.deviceId },
       });
-      const allowed =
-        device?.status === UserDeviceStatus.ACTIVE ||
-        device?.status === UserDeviceStatus.PENDING_LINK;
-      if (!allowed) {
-        throw new UnauthorizedException('Unknown or revoked device');
+      if (device?.authPublicKey) {
+        this.verifyDeviceAuthSignature(
+          device.authPublicKey,
+          dto.deviceAuthSignature,
+          challengeMessage,
+        );
+      } else if (this.deviceAuthRequired()) {
+        throw new UnauthorizedException(
+          'Device auth required',
+          'DEVICE_AUTH_REQUIRED',
+        );
+      } else if (dto.deviceId !== PRIMARY_DEVICE_ID) {
+        const allowed =
+          device?.status === UserDeviceStatus.ACTIVE ||
+          device?.status === UserDeviceStatus.PENDING_LINK;
+        if (!allowed) {
+          throw new UnauthorizedException('Unknown or revoked device');
+        }
       }
     }
     // `registrationId` is per-device — validated/upserted in `POST /keys`
@@ -156,7 +175,7 @@ export class AuthService {
   private async verifyChallengeSignature(
     dto: IdentityAuthDto,
     expectedHost: string,
-  ): Promise<void> {
+  ): Promise<Buffer> {
     // 1. Consume challenge (one-time use)
     const challenge = await this.challengeStore.consumeChallenge(
       dto.challengeId,
@@ -198,6 +217,47 @@ export class AuthService {
       }
       throw new BadRequestException('Signature verification failed');
     }
+
+    return messageToVerify;
+  }
+
+  /**
+   * Verify the per-device-auth signature (ADR-0010) over the SAME
+   * domain-separated challenge message the identity signature signed. The
+   * device-auth key is a libsignal Curve25519 key, verified with the same
+   * XEdDSA primitive used for the identity signature.
+   */
+  private verifyDeviceAuthSignature(
+    authPublicKey: string,
+    signature: string | undefined,
+    challengeMessage: Buffer,
+  ): void {
+    if (!signature) {
+      throw new UnauthorizedException(
+        'Device auth signature required',
+        'DEVICE_AUTH_INVALID',
+      );
+    }
+    try {
+      const pub = PublicKey.deserialize(Buffer.from(authPublicKey, 'base64'));
+      const ok = pub.verify(challengeMessage, Buffer.from(signature, 'base64'));
+      if (!ok) {
+        throw new UnauthorizedException(
+          'Invalid device auth signature',
+          'DEVICE_AUTH_INVALID',
+        );
+      }
+    } catch (error) {
+      if (error instanceof UnauthorizedException) throw error;
+      throw new UnauthorizedException(
+        'Invalid device auth signature',
+        'DEVICE_AUTH_INVALID',
+      );
+    }
+  }
+
+  private deviceAuthRequired(): boolean {
+    return process.env.DEVICE_AUTH_REQUIRED === 'true';
   }
 
   /**

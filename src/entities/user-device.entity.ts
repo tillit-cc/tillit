@@ -35,6 +35,13 @@ export class UserDevice {
   @Column({ name: 'identity_public_key', type: 'text' })
   identityPublicKey: string;
 
+  // Per-device server-auth credential (ADR-0010): libsignal Curve25519 public
+  // key bound at first key upload, verified at login so a device's `deviceId`
+  // is provable (not self-asserted via the shared identity key). Nullable for
+  // transition — rows without it fall back to identity-only auth.
+  @Column({ name: 'auth_public_key', type: 'text', nullable: true })
+  authPublicKey?: string | null;
+
   @Column({ nullable: true, length: 100 })
   name?: string;
 

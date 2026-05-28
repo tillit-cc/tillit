@@ -42,6 +42,8 @@ export class KeysController {
       uploadKeysDto.signedPreKey,
       uploadKeysDto.preKeys,
       uploadKeysDto.kyberPreKeys,
+      uploadKeysDto.deviceAuthPublicKey,
+      uploadKeysDto.recoverPrimary,
     );
 
     return {

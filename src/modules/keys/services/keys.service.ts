@@ -1,4 +1,10 @@
-import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  ConflictException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
 import { SignalKey, KeyTypeId } from '../../../entities/signal-key.entity';
@@ -9,6 +15,7 @@ import {
 } from '../../../entities/user-device.entity';
 import { KeyDto, KeyStatusDto, SignedKeyDto } from '../dto/keys.dto';
 import { DeviceLinkService } from '../../../auth/services/device-link.service';
+import { DeviceService } from '../../../auth/services/device.service';
 
 @Injectable()
 export class KeysService {
@@ -23,6 +30,7 @@ export class KeysService {
     private userDeviceRepository: Repository<UserDevice>,
     private dataSource: DataSource,
     private deviceLinkService: DeviceLinkService,
+    private deviceService: DeviceService,
   ) {}
 
   /**
@@ -36,6 +44,8 @@ export class KeysService {
     signedPreKey?: SignedKeyDto,
     preKeys?: KeyDto[],
     kyberPreKeys?: KeyDto[],
+    deviceAuthPublicKey?: string,
+    recoverPrimary?: boolean,
   ): Promise<void> {
     // Verify user exists
     const user = await this.userRepository.findOne({ where: { id: userId } });
@@ -52,6 +62,18 @@ export class KeysService {
         deviceId,
         registrationId,
         identityPublicKey,
+        deviceAuthPublicKey,
+        recoverPrimary,
+      );
+    } else if (deviceAuthPublicKey !== undefined) {
+      // Auth-key-only registration on an existing device (e.g. a client that
+      // upgrades and registers its device-auth key without re-uploading the
+      // identity). No-op if the row doesn't exist yet.
+      await this.bindDeviceAuthKeyOnly(
+        userId,
+        deviceId,
+        deviceAuthPublicKey,
+        recoverPrimary,
       );
     }
 
@@ -477,6 +499,8 @@ export class KeysService {
     deviceId: number,
     registrationId: number,
     identityPublicKey: string,
+    deviceAuthPublicKey?: string,
+    recoverPrimary?: boolean,
   ): Promise<void> {
     const existing = await this.userDeviceRepository.findOne({
       where: { userId, deviceId },
@@ -486,7 +510,16 @@ export class KeysService {
       existing.registrationId = registrationId;
       existing.identityPublicKey = identityPublicKey;
       existing.lastActiveAt = new Date();
+      const wipeLinked = this.applyDeviceAuthKey(
+        existing,
+        deviceId,
+        deviceAuthPublicKey,
+        recoverPrimary,
+      );
       await this.userDeviceRepository.save(existing);
+      if (wipeLinked) {
+        await this.deviceService.revokeAllLinkedForUser(userId);
+      }
       return;
     }
 
@@ -495,8 +528,64 @@ export class KeysService {
       deviceId,
       registrationId,
       identityPublicKey,
+      authPublicKey: deviceAuthPublicKey ?? null,
     });
 
     await this.userDeviceRepository.save(device);
+  }
+
+  /**
+   * Bind the device-auth key on an existing device row without touching the
+   * identity (auth-key-only `POST /keys`). No-op if the row doesn't exist yet.
+   */
+  private async bindDeviceAuthKeyOnly(
+    userId: number,
+    deviceId: number,
+    deviceAuthPublicKey: string,
+    recoverPrimary?: boolean,
+  ): Promise<void> {
+    const existing = await this.userDeviceRepository.findOne({
+      where: { userId, deviceId },
+    });
+    if (!existing) return;
+    const wipeLinked = this.applyDeviceAuthKey(
+      existing,
+      deviceId,
+      deviceAuthPublicKey,
+      recoverPrimary,
+    );
+    await this.userDeviceRepository.save(existing);
+    if (wipeLinked) {
+      await this.deviceService.revokeAllLinkedForUser(userId);
+    }
+  }
+
+  /**
+   * Apply the per-device server-auth key (ADR-0010) to a device row. Returns
+   * true when the caller must wipe the user's linked devices (primary
+   * recovery). Mutates `device.authPublicKey`. TOFU on first bind; idempotent
+   * for the same key; `DEVICE_AUTH_MISMATCH` on a silent re-bind attempt.
+   */
+  private applyDeviceAuthKey(
+    device: UserDevice,
+    deviceId: number,
+    deviceAuthPublicKey: string | undefined,
+    recoverPrimary: boolean | undefined,
+  ): boolean {
+    if (deviceAuthPublicKey === undefined) return false;
+    if (!device.authPublicKey) {
+      device.authPublicKey = deviceAuthPublicKey; // trust-on-first-use bind
+      return false;
+    }
+    if (device.authPublicKey === deviceAuthPublicKey) return false; // idempotent
+    // Different key on an already-bound device.
+    if (recoverPrimary && deviceId === 1) {
+      device.authPublicKey = deviceAuthPublicKey; // recovery re-bind
+      return true; // signal: wipe linked devices
+    }
+    throw new ConflictException({
+      statusCode: HttpStatus.CONFLICT,
+      error: 'DEVICE_AUTH_MISMATCH',
+    });
   }
 }

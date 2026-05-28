@@ -1,4 +1,4 @@
-import { IsString, IsNumber, MaxLength } from 'class-validator';
+import { IsString, IsNumber, MaxLength, IsOptional } from 'class-validator';
 
 export class IdentityAuthDto {
   @IsString()
@@ -30,6 +30,14 @@ export class IdentityAuthDto {
   @IsString()
   @MaxLength(500)
   challengeSignature: string; // Base64-encoded Ed25519 signature of the nonce
+
+  // Per-device server-auth (ADR-0010): signature of the SAME domain-separated
+  // challenge message, produced with the device-auth private key. Optional in
+  // transition mode; required once the device has a registered auth key.
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  deviceAuthSignature?: string;
 }
 
 export interface IdentityAuthResponse {
