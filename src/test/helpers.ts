@@ -21,6 +21,7 @@ export function createMockRepository<T = any>() {
     save: jest.fn().mockImplementation((entity) => Promise.resolve(entity)),
     create: jest.fn().mockImplementation((dto) => ({ ...dto })),
     delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
     count: jest.fn().mockResolvedValue(0),
     remove: jest.fn(),
     createQueryBuilder: jest.fn().mockReturnValue({
@@ -63,9 +64,11 @@ export function createMockSocketServer() {
     user: userId !== undefined ? { userId, deviceId: 1 } : undefined,
     emit: jest
       .fn()
-      .mockImplementation((_event: string, _data: any, ack?: Function) => {
-        if (ack) ack(); // Auto-ack by default
-      }),
+      .mockImplementation(
+        (_event: string, _data: any, ack?: (...args: unknown[]) => void) => {
+          if (ack) ack(); // Auto-ack by default
+        },
+      ),
     join: jest.fn(),
     leave: jest.fn(),
   });

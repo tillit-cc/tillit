@@ -32,7 +32,7 @@ describe('Chat WebSocket (E2E)', () => {
         () => reject(new Error(`Timeout waiting for event: ${event}`)),
         timeoutMs,
       );
-      client.once(event, (data: any, ack?: Function) => {
+      client.once(event, (data: any, ack?: (...args: unknown[]) => void) => {
         clearTimeout(timer);
         if (ack) ack(); // Send ack back to server
         resolve(data);

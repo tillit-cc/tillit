@@ -77,7 +77,10 @@ export interface LinkResultResponse {
   status: 'pending' | 'pubkey-shared' | 'completed' | 'expired';
   // Present from `pubkey-shared` onwards.
   primaryEphemeralPublicKey?: string;
-  primaryUserId?: number;
+  // UTF-8 string, NOT a number: it feeds the safety-number HKDF `info` on both
+  // sides, so the wire type must match what the clients hash. See
+  // `_shared/api/multi-device-linking.md` §"Safety number format".
+  primaryUserId?: string;
   identityKeyPub?: string;
   // Present only when `completed`.
   assignedDeviceId?: number;

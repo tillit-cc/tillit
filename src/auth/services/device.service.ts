@@ -167,6 +167,13 @@ export class DeviceService {
     device.revokedAt = revokedAtMs;
     await this.deviceRepo.save(device);
 
+    // Make the revocation effective immediately on this instance's JWT/socket
+    // revocation check, ahead of the cache's TTL refresh.
+    this.deviceLinkService.markDeviceRevokedInCache(
+      device.userId,
+      device.deviceId,
+    );
+
     // Drop the pre-keys / signed pre-key / kyber keys for this device so
     // GET /keys/:userId stops returning them and no new sessions can be
     // established with the revoked device.

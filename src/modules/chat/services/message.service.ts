@@ -323,9 +323,7 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
         ),
       );
 
-      this.logger.log(
-        `Stored message for ${offline.length} offline device(s)`,
-      );
+      this.logger.log(`Stored message for ${offline.length} offline device(s)`);
 
       // Push notifications: wake the user, not the device. Skip the sender's
       // own user (no self-push, mirrors fanOutToRecipients semantics).
@@ -385,6 +383,18 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
       `Saved pending message ${envelope.id} for user ${userId}` +
         (recipientDeviceId !== null ? ` device ${recipientDeviceId}` : ''),
     );
+  }
+
+  /**
+   * Set of userIds that are members of the room. Used to gate offline
+   * queueing/push in the fan-out paths against client-supplied `recipients[]`.
+   */
+  private async getRoomMemberIds(roomId: number): Promise<Set<number>> {
+    const members = await this.roomUserRepository.find({
+      where: { roomId },
+      select: ['userId'],
+    });
+    return new Set(members.map((m) => m.userId));
   }
 
   /**
@@ -551,9 +561,13 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
   ): Promise<boolean> {
     const sockets = await this.server.in(`room:${roomId}`).fetchSockets();
     let anyAcked = false;
-    // Track which recipient (user, device) failed so we can wake the user via
-    // push without sending duplicate notifications.
-    const offlineUserIds = new Set<number>();
+    // Recipients whose live delivery missed — queued (and their user pushed)
+    // only after a room-membership check below.
+    const offlineRecipients: Array<{
+      userId: number;
+      deviceId: number;
+      envelope: MessageEnvelope;
+    }> = [];
 
     await Promise.all(
       recipients.map(async (rcp) => {
@@ -595,26 +609,41 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
         if (acked) {
           anyAcked = true;
         } else if (!volatile) {
-          // Offline (or zombie) device: queue the per-device ciphertext.
-          // The envelope contains exactly the bytes this device needs to
-          // decrypt — the next-best thing to live delivery.
-          await this.savePendingMessage(
-            rcp.userId,
-            roomId,
+          offlineRecipients.push({
+            userId: rcp.userId,
+            deviceId: rcp.deviceId,
             envelope,
-            rcp.deviceId,
-          );
-          offlineUserIds.add(rcp.userId);
+          });
         }
       }),
     );
 
-    if (!volatile && offlineUserIds.size > 0) {
+    if (!volatile && offlineRecipients.length > 0) {
+      // Online delivery is implicitly room-scoped (sockets come from the
+      // `room:` set), but the offline queue + push are not. Filter against
+      // room membership so a malicious/buggy sender can't enqueue rows or
+      // spam push for userIds that aren't in the room. The membership query
+      // is paid only when there is at least one offline recipient.
+      const memberIds = await this.getRoomMemberIds(roomId);
+      const deliverable = offlineRecipients.filter((r) =>
+        memberIds.has(r.userId),
+      );
+
+      // Offline (or zombie) device: queue the per-device ciphertext. The
+      // envelope holds exactly the bytes that device needs to decrypt.
+      await Promise.all(
+        deliverable.map((r) =>
+          this.savePendingMessage(r.userId, roomId, r.envelope, r.deviceId),
+        ),
+      );
+
       // Push notifications are user-scoped (one Expo token per device install,
       // all rows owned by `user_id`), so a single push wakes every device of
       // that user. Skip the sender's own user: writing from one device must
       // not notify our own other devices (WhatsApp/Signal Desktop semantics).
-      const toNotify = [...offlineUserIds].filter((id) => id !== senderId);
+      const toNotify = [...new Set(deliverable.map((r) => r.userId))].filter(
+        (id) => id !== senderId,
+      );
       if (toNotify.length > 0) {
         const pushEnvelope: MessageEnvelope = {
           id: baseId,
@@ -696,6 +725,11 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
     volatile: boolean | undefined,
   ): Promise<void> {
     const sockets = await this.server.in(`room:${roomId}`).fetchSockets();
+    const offlineRecipients: Array<{
+      userId: number;
+      deviceId: number;
+      packet: ControlPacket;
+    }> = [];
 
     await Promise.all(
       recipients.map(async (rcp) => {
@@ -732,15 +766,27 @@ export class MessageService implements OnModuleInit, OnModuleDestroy {
         }
 
         if (!acked && !volatile) {
-          await this.savePendingMessage(
-            rcp.userId,
-            roomId,
-            controlPacket,
-            rcp.deviceId,
-          );
+          offlineRecipients.push({
+            userId: rcp.userId,
+            deviceId: rcp.deviceId,
+            packet: controlPacket,
+          });
         }
       }),
     );
+
+    if (offlineRecipients.length > 0) {
+      // Same room-membership gate as the message fan-out: never queue a control
+      // packet for a userId that isn't in the room (control packets never push).
+      const memberIds = await this.getRoomMemberIds(roomId);
+      await Promise.all(
+        offlineRecipients
+          .filter((r) => memberIds.has(r.userId))
+          .map((r) =>
+            this.savePendingMessage(r.userId, roomId, r.packet, r.deviceId),
+          ),
+      );
+    }
   }
 
   /**

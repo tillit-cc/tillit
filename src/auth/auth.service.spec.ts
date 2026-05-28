@@ -6,10 +6,7 @@ import { AuthService } from './auth.service';
 import { User } from '../entities/user.entity';
 import { PushToken, PushProvider } from '../entities/push-token.entity';
 import { SignalKey, KeyTypeId } from '../entities/signal-key.entity';
-import {
-  UserDevice,
-  UserDeviceStatus,
-} from '../entities/user-device.entity';
+import { UserDevice, UserDeviceStatus } from '../entities/user-device.entity';
 import { JwtConfigService } from '../config/jwt/config.service';
 import { ChallengeStore } from './services/challenge.store';
 import { AuthHostService } from './services/auth-host.service';

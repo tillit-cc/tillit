@@ -10,10 +10,7 @@ import { PublicKey } from '@signalapp/libsignal-client';
 import { User } from '../entities/user.entity';
 import { PushToken, PushProvider } from '../entities/push-token.entity';
 import { SignalKey, KeyTypeId } from '../entities/signal-key.entity';
-import {
-  UserDevice,
-  UserDeviceStatus,
-} from '../entities/user-device.entity';
+import { UserDevice, UserDeviceStatus } from '../entities/user-device.entity';
 import { JwtConfigService } from '../config/jwt/config.service';
 import { IdentityAuthDto, IdentityAuthResponse } from './dto/identity-auth.dto';
 import { ChallengeStore } from './services/challenge.store';

@@ -452,7 +452,7 @@ describe('MessageService', () => {
   });
 
   describe('handleOfflineUsers', () => {
-    it('saves a per-device pending row for every active device that didn\'t ack', async () => {
+    it("saves a per-device pending row for every active device that didn't ack", async () => {
       roomService.getActiveDevices.mockResolvedValue([
         { userId: 1, deviceId: 1 },
         { userId: 2, deviceId: 1 },
@@ -462,13 +462,7 @@ describe('MessageService', () => {
 
       const envelope = service.normalizeEnvelope(1, 1, 1, { text: 'test' });
       // user 2 device 1 acked; user 3 device 1 is offline.
-      await service.handleOfflineUsers(
-        1,
-        1,
-        1,
-        envelope,
-        new Set(['2:1']),
-      );
+      await service.handleOfflineUsers(1, 1, 1, envelope, new Set(['2:1']));
 
       expect(pendingMessageRepo.create).toHaveBeenCalledTimes(1);
       expect(pendingMessageRepo.create).toHaveBeenCalledWith(
@@ -480,7 +474,7 @@ describe('MessageService', () => {
       );
     });
 
-    it('queues per-device pending for the sender\'s OTHER device (backend-0011)', async () => {
+    it("queues per-device pending for the sender's OTHER device (backend-0011)", async () => {
       // Sender = user 1 device 1. User 1 also has device 2 offline.
       roomService.getActiveDevices.mockResolvedValue([
         { userId: 1, deviceId: 1 },
@@ -490,13 +484,7 @@ describe('MessageService', () => {
       pushTokenRepo.find.mockResolvedValue([]);
 
       const envelope = service.normalizeEnvelope(1, 1, 1, { text: 'test' });
-      await service.handleOfflineUsers(
-        1,
-        1,
-        1,
-        envelope,
-        new Set(['2:1']),
-      );
+      await service.handleOfflineUsers(1, 1, 1, envelope, new Set(['2:1']));
 
       // Only user 1 device 2 needs a pending row — the sending device is excluded.
       expect(pendingMessageRepo.create).toHaveBeenCalledTimes(1);
@@ -522,7 +510,7 @@ describe('MessageService', () => {
       expect(expoNotificationService.sendNotification).toHaveBeenCalled();
     });
 
-    it('never pushes the sender — even when sender\'s other device is offline', async () => {
+    it("never pushes the sender — even when sender's other device is offline", async () => {
       // Sender's other device is offline; non-self user 2 has no offline device.
       roomService.getActiveDevices.mockResolvedValue([
         { userId: 1, deviceId: 1 },
@@ -533,13 +521,7 @@ describe('MessageService', () => {
 
       const envelope = service.normalizeEnvelope(1, 1, 1, { text: 'test' });
       // User 2 device 1 acked → only the sender's other device is offline.
-      await service.handleOfflineUsers(
-        1,
-        1,
-        1,
-        envelope,
-        new Set(['2:1']),
-      );
+      await service.handleOfflineUsers(1, 1, 1, envelope, new Set(['2:1']));
 
       expect(pendingMessageRepo.create).toHaveBeenCalledTimes(1);
       expect(expoNotificationService.sendNotification).not.toHaveBeenCalled();
@@ -630,6 +612,10 @@ describe('MessageService', () => {
       const sockA1 = makeDeviceSocket(2, 1, 'sock-A1');
       mockServer._setSockets([sockA1]);
       pushTokenRepo.find.mockResolvedValue([]);
+      roomUserRepo.find.mockResolvedValue([
+        makeRoomUser({ userId: 1 }),
+        makeRoomUser({ userId: 2 }),
+      ]);
 
       await service.fanOutToRecipients(
         1,
@@ -657,6 +643,10 @@ describe('MessageService', () => {
     it('pushes when at least one device of a non-self user is offline', async () => {
       mockServer._setSockets([]);
       pushTokenRepo.find.mockResolvedValue([makePushToken({ userId: 2 })]);
+      roomUserRepo.find.mockResolvedValue([
+        makeRoomUser({ userId: 1 }),
+        makeRoomUser({ userId: 2 }),
+      ]);
 
       await service.fanOutToRecipients(
         1,
@@ -680,6 +670,7 @@ describe('MessageService', () => {
       mockServer._setSockets([]);
       // Sender user 1 has push tokens for their own devices.
       pushTokenRepo.find.mockResolvedValue([makePushToken({ userId: 1 })]);
+      roomUserRepo.find.mockResolvedValue([makeRoomUser({ userId: 1 })]);
 
       await service.fanOutToRecipients(
         1,
@@ -755,6 +746,27 @@ describe('MessageService', () => {
         expect.any(Function),
       );
     });
+
+    it('does NOT queue or push a recipient who is not a room member', async () => {
+      mockServer._setSockets([]); // everyone offline
+      // Room contains only the sender (user 1); user 99 is NOT a member.
+      roomUserRepo.find.mockResolvedValue([makeRoomUser({ userId: 1 })]);
+      pushTokenRepo.find.mockResolvedValue([makePushToken({ userId: 99 })]);
+
+      await service.fanOutToRecipients(
+        1,
+        1, // sender
+        1,
+        [{ userId: 99, deviceId: 1, ciphertext: 'evil' }],
+        undefined,
+        undefined,
+      );
+
+      await service.awaitBackgroundDeliveries();
+      // A non-member must get neither a pending row nor a push.
+      expect(pendingMessageRepo.create).not.toHaveBeenCalled();
+      expect(expoNotificationService.sendNotification).not.toHaveBeenCalled();
+    });
   });
 
   describe('fanOutPacketToRecipients', () => {
@@ -804,6 +816,10 @@ describe('MessageService', () => {
 
     it('queues per-device pending for offline targets', async () => {
       mockServer._setSockets([]);
+      roomUserRepo.find.mockResolvedValue([
+        makeRoomUser({ userId: 1 }),
+        makeRoomUser({ userId: 2 }),
+      ]);
 
       await service.fanOutPacketToRecipients(1, 1, 1, [
         { userId: 2, deviceId: 7, packet: { type: 'X3DH' } },
@@ -830,6 +846,18 @@ describe('MessageService', () => {
         undefined,
         true,
       );
+
+      await service.awaitBackgroundDeliveries();
+      expect(pendingMessageRepo.create).not.toHaveBeenCalled();
+    });
+
+    it('does NOT queue a control packet for a non-member recipient', async () => {
+      mockServer._setSockets([]);
+      roomUserRepo.find.mockResolvedValue([makeRoomUser({ userId: 1 })]);
+
+      await service.fanOutPacketToRecipients(1, 1, 1, [
+        { userId: 99, deviceId: 1, packet: { type: 'X3DH' } },
+      ]);
 
       await service.awaitBackgroundDeliveries();
       expect(pendingMessageRepo.create).not.toHaveBeenCalled();

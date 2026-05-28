@@ -5,7 +5,10 @@ import { UnauthorizedException } from '@nestjs/common';
 import { KeysService } from './keys.service';
 import { SignalKey, KeyTypeId } from '../../../entities/signal-key.entity';
 import { User } from '../../../entities/user.entity';
-import { UserDevice } from '../../../entities/user-device.entity';
+import {
+  UserDevice,
+  UserDeviceStatus,
+} from '../../../entities/user-device.entity';
 import { DeviceLinkService } from '../../../auth/services/device-link.service';
 import {
   createMockRepository,
@@ -254,6 +257,74 @@ describe('KeysService', () => {
       expect(result.identityKeyPresent).toBe(false);
       expect(result.preKeysCount).toBe(0);
       expect(result.kyberPreKeysCount).toBe(0);
+    });
+  });
+
+  describe('getAvailableKeysForUserDevices (multi-device bundles)', () => {
+    it('returns one bundle per active device and never leaks deviceName', async () => {
+      userRepo.findOne.mockResolvedValue(
+        makeUser({ id: 1, identityPublicKey: 'user-identity-key' }),
+      );
+      userDeviceRepo.find.mockResolvedValue([
+        makeUserDevice({
+          userId: 1,
+          deviceId: 2,
+          registrationId: 999,
+          status: UserDeviceStatus.ACTIVE,
+          deviceName: 'Marco-Secret-iPhone',
+        }),
+      ]);
+      // Signed pre-key fetched outside the transaction, one per device.
+      signalKeyRepo.findOne.mockResolvedValueOnce(
+        makeSignalKey({
+          keyTypeId: KeyTypeId.SIGNED_PRE_KEY,
+          keyData: 'signed',
+          keySignature: 'sig',
+        }),
+      );
+      // pre-key + kyber consumed inside the transaction.
+      txKeyRepo.findOne
+        .mockResolvedValueOnce(
+          makeSignalKey({ keyTypeId: KeyTypeId.PRE_KEY, keyData: 'pre' }),
+        )
+        .mockResolvedValueOnce(
+          makeSignalKey({
+            keyTypeId: KeyTypeId.KYBER_PRE_KEY,
+            keyData: 'kyber',
+            keySignature: 'ksig',
+          }),
+        );
+
+      const { devices } = await service.getAvailableKeysForUserDevices(1);
+
+      expect(devices).toHaveLength(1);
+      const bundle = devices[0];
+      expect(bundle.deviceId).toBe(2);
+      expect(bundle.registrationId).toBe(999);
+      // Identity is user-level — shared across every device of the user.
+      expect(bundle.identityKey).toBe('user-identity-key');
+      expect(bundle.signedPreKey).toMatchObject({ keyData: 'signed' });
+      expect(bundle.preKey).toMatchObject({ keyData: 'pre' });
+      expect(bundle.kyberPreKey).toMatchObject({ keyData: 'kyber' });
+
+      // ADR-0001 P-2: peers must never see device names.
+      expect(bundle).not.toHaveProperty('deviceName');
+      expect(bundle).not.toHaveProperty('name');
+      expect(JSON.stringify(devices)).not.toContain('Marco-Secret-iPhone');
+    });
+
+    it('only asks the DB for ACTIVE devices (revoked/pending excluded)', async () => {
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+      userDeviceRepo.find.mockResolvedValue([]);
+
+      const result = await service.getAvailableKeysForUserDevices(1);
+
+      expect(result).toEqual({ devices: [] });
+      expect(userDeviceRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 1, status: UserDeviceStatus.ACTIVE },
+        }),
+      );
     });
   });
 });

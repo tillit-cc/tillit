@@ -230,7 +230,7 @@ describe('DeviceLinkService — wire v2.1 (symmetric safety number)', () => {
       expect(result).toEqual({
         status: 'pubkey-shared',
         primaryEphemeralPublicKey: VALID_PUBKEY,
-        primaryUserId: 42,
+        primaryUserId: '42', // string on the wire (HKDF input)
         identityKeyPub: 'identity-key-base64',
       });
       // pubkey-shared reads are NOT one-time-use — the row must NOT be saved.
@@ -254,7 +254,7 @@ describe('DeviceLinkService — wire v2.1 (symmetric safety number)', () => {
   });
 
   describe('getLinkResult — status=completed', () => {
-    it('returns encryptedPayload + redundant pubkey-shared fields and consumes the row', async () => {
+    it('returns encryptedPayload + redundant pubkey-shared fields and atomically consumes the row', async () => {
       const row: any = {
         sessionId: 'sess-1',
         status: DeviceLinkSessionStatus.COMPLETED,
@@ -266,6 +266,7 @@ describe('DeviceLinkService — wire v2.1 (symmetric safety number)', () => {
         consumedAt: null,
       };
       sessionRepo.findOne.mockResolvedValue(row);
+      sessionRepo.update.mockResolvedValue({ affected: 1 });
       userRepo.findOne.mockResolvedValue(
         makeUser({ id: 42, identityPublicKey: 'identity-key-base64' }),
       );
@@ -278,13 +279,40 @@ describe('DeviceLinkService — wire v2.1 (symmetric safety number)', () => {
         Buffer.from([1, 2, 3, 4]).toString('base64'),
       );
       expect(result.primaryEphemeralPublicKey).toBe(VALID_PUBKEY);
-      expect(result.primaryUserId).toBe(42);
+      // primaryUserId is a STRING on the wire (HKDF input).
+      expect(result.primaryUserId).toBe('42');
       expect(result.identityKeyPub).toBe('identity-key-base64');
 
-      expect(row.status).toBe(DeviceLinkSessionStatus.CONSUMED);
-      expect(row.encryptedPayload).toBeNull();
-      expect(row.primaryEphemeralPubKey).toBeNull();
-      expect(sessionRepo.save).toHaveBeenCalledWith(row);
+      // Consumed via a conditional UPDATE gated on status=completed, not save().
+      expect(sessionRepo.update).toHaveBeenCalledWith(
+        { sessionId: 'sess-1', status: DeviceLinkSessionStatus.COMPLETED },
+        expect.objectContaining({
+          status: DeviceLinkSessionStatus.CONSUMED,
+          encryptedPayload: null,
+          primaryEphemeralPubKey: null,
+        }),
+      );
+      expect(sessionRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('SESSION_ALREADY_CONSUMED when a concurrent poll already claimed it (affected=0)', async () => {
+      sessionRepo.findOne.mockResolvedValue({
+        sessionId: 'sess-1',
+        status: DeviceLinkSessionStatus.COMPLETED,
+        expiresAt: Date.now() + 60_000,
+        primaryUserId: 42,
+        primaryEphemeralPubKey: VALID_PUBKEY,
+        encryptedPayload: Buffer.from([1, 2, 3, 4]),
+        assignedDeviceId: 7,
+      });
+      sessionRepo.update.mockResolvedValue({ affected: 0 });
+      userRepo.findOne.mockResolvedValue(
+        makeUser({ id: 42, identityPublicKey: 'identity-key-base64' }),
+      );
+
+      await expect(service.getLinkResult('sess-1')).rejects.toMatchObject({
+        response: { error: 'SESSION_ALREADY_CONSUMED' },
+      });
     });
   });
 
@@ -462,6 +490,214 @@ describe('DeviceLinkService — wire v2.1 (symmetric safety number)', () => {
         service.markDeviceActiveAfterKeyUpload(42, 2),
       ).resolves.toBeUndefined();
       expect(partialNotifier.notifyDeviceLinked).toHaveBeenCalled();
+    });
+  });
+
+  describe('initLink', () => {
+    const mockOpenCount = (count: number) => {
+      sessionRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(count),
+      } as any);
+    };
+
+    it('creates a waiting session and returns sessionId + expiresAt', async () => {
+      mockOpenCount(0);
+
+      const result = await service.initLink({
+        ephemeralPublicKey: VALID_PUBKEY,
+        deviceName: 'iPhone',
+        userAgent: 'iOS 18',
+      });
+
+      expect(result.sessionId).toEqual(expect.any(String));
+      expect(result.sessionId.length).toBeGreaterThan(0);
+      expect(result.expiresAt).toEqual(expect.any(String));
+      expect(sessionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: DeviceLinkSessionStatus.WAITING,
+          ephemeralPublicKey: VALID_PUBKEY,
+          deviceName: 'iPhone',
+        }),
+      );
+    });
+
+    it('TOO_MANY_LINKS when the global open-session cap is reached', async () => {
+      mockOpenCount(1000); // DEFAULT_OPEN_SESSION_CAP
+
+      await expect(
+        service.initLink({ ephemeralPublicKey: VALID_PUBKEY }),
+      ).rejects.toMatchObject({ response: { error: 'TOO_MANY_LINKS' } });
+      expect(sessionRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('INVALID_EPHEMERAL_KEY for a non-32B key (before touching the DB)', async () => {
+      await expect(
+        service.initLink({
+          ephemeralPublicKey: Buffer.alloc(16).toString('base64'),
+        }),
+      ).rejects.toMatchObject({ response: { error: 'INVALID_EPHEMERAL_KEY' } });
+    });
+  });
+
+  describe('completeLink — guards', () => {
+    const sharedRow = (over: Record<string, unknown> = {}) => ({
+      sessionId: 'sess-1',
+      status: DeviceLinkSessionStatus.PUBKEY_SHARED,
+      expiresAt: Date.now() + 60_000,
+      primaryUserId: 42,
+      primaryDeviceId: PRIMARY_DEVICE_ID,
+      primaryEphemeralPubKey: VALID_PUBKEY,
+      ...over,
+    });
+
+    it('DEVICE_LIMIT_REACHED once the user hits the device cap', async () => {
+      sessionRepo.findOne.mockResolvedValue(sharedRow());
+      deviceRepo.count.mockResolvedValue(5); // DEFAULT_DEVICE_CAP
+
+      await expect(
+        service.completeLink(42, PRIMARY_DEVICE_ID, {
+          sessionId: 'sess-1',
+          encryptedPayload: VALID_PAYLOAD,
+        }),
+      ).rejects.toMatchObject({ response: { error: 'DEVICE_LIMIT_REACHED' } });
+      expect(deviceRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('SESSION_EXPIRED when the TTL elapsed', async () => {
+      sessionRepo.findOne.mockResolvedValue(
+        sharedRow({ expiresAt: Date.now() - 1_000 }),
+      );
+
+      await expect(
+        service.completeLink(42, PRIMARY_DEVICE_ID, {
+          sessionId: 'sess-1',
+          encryptedPayload: VALID_PAYLOAD,
+        }),
+      ).rejects.toMatchObject({ response: { error: 'SESSION_EXPIRED' } });
+    });
+
+    it('PAYLOAD_TOO_LARGE for an empty payload', async () => {
+      await expect(
+        service.completeLink(42, PRIMARY_DEVICE_ID, {
+          sessionId: 'sess-1',
+          encryptedPayload: '',
+        }),
+      ).rejects.toMatchObject({ response: { error: 'PAYLOAD_TOO_LARGE' } });
+    });
+
+    it('PAYLOAD_TOO_LARGE for a payload over the 4 KB cap', async () => {
+      const tooBig = Buffer.alloc(4 * 1024 + 1).toString('base64');
+
+      await expect(
+        service.completeLink(42, PRIMARY_DEVICE_ID, {
+          sessionId: 'sess-1',
+          encryptedPayload: tooBig,
+        }),
+      ).rejects.toMatchObject({ response: { error: 'PAYLOAD_TOO_LARGE' } });
+    });
+
+    it('PRIMARY_REQUIRED if a linked device calls complete', async () => {
+      await expect(
+        service.completeLink(42, 2, {
+          sessionId: 'sess-1',
+          encryptedPayload: VALID_PAYLOAD,
+        }),
+      ).rejects.toMatchObject({ response: { error: 'PRIMARY_REQUIRED' } });
+    });
+  });
+
+  describe('getLinkResult — guards', () => {
+    it('returns the pending shape while the session is still waiting', async () => {
+      sessionRepo.findOne.mockResolvedValue({
+        sessionId: 'sess-1',
+        status: DeviceLinkSessionStatus.WAITING,
+        expiresAt: Date.now() + 60_000,
+      });
+
+      expect(await service.getLinkResult('sess-1')).toEqual({
+        status: 'pending',
+      });
+      expect(sessionRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('SESSION_ALREADY_CONSUMED on a second poll after completion', async () => {
+      sessionRepo.findOne.mockResolvedValue({
+        sessionId: 'sess-1',
+        status: DeviceLinkSessionStatus.CONSUMED,
+        expiresAt: Date.now() + 60_000,
+        consumedAt: Date.now(),
+      });
+
+      await expect(service.getLinkResult('sess-1')).rejects.toMatchObject({
+        response: { error: 'SESSION_ALREADY_CONSUMED' },
+      });
+    });
+
+    it('SESSION_EXPIRED once the TTL has elapsed', async () => {
+      sessionRepo.findOne.mockResolvedValue({
+        sessionId: 'sess-1',
+        status: DeviceLinkSessionStatus.PUBKEY_SHARED,
+        expiresAt: Date.now() - 1_000,
+      });
+
+      await expect(service.getLinkResult('sess-1')).rejects.toMatchObject({
+        response: { error: 'SESSION_EXPIRED' },
+      });
+    });
+
+    it('SESSION_NOT_FOUND for an unknown sessionId', async () => {
+      sessionRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.getLinkResult('nope')).rejects.toMatchObject({
+        response: { error: 'SESSION_NOT_FOUND' },
+      });
+    });
+  });
+
+  describe('cleanupExpiredSessions', () => {
+    it('soft-expires waiting rows and hard-deletes lapsed AND consumed rows', async () => {
+      const qb = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 3 }),
+      };
+      sessionRepo.createQueryBuilder.mockReturnValue(qb as any);
+      sessionRepo.delete.mockResolvedValue({ affected: 0 } as any);
+
+      const expired = await service.cleanupExpiredSessions();
+
+      expect(expired).toBe(3);
+      // Two disjoint hard-delete passes: never-consumed lapsed + consumed.
+      expect(sessionRepo.delete).toHaveBeenCalledTimes(2);
+      expect(sessionRepo.delete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: DeviceLinkSessionStatus.CONSUMED,
+        }),
+      );
+    });
+  });
+
+  describe('isDeviceRevoked (cached)', () => {
+    it('returns true for a revoked device and serves repeats from cache', async () => {
+      deviceRepo.find.mockResolvedValue([{ userId: 42, deviceId: 2 }]);
+
+      expect(await service.isDeviceRevoked(42, 2)).toBe(true);
+      expect(await service.isDeviceRevoked(42, 3)).toBe(false);
+      // Both lookups served by a single DB load (within the TTL).
+      expect(deviceRepo.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('markDeviceRevokedInCache takes effect without a DB reload', async () => {
+      deviceRepo.find.mockResolvedValue([]);
+
+      expect(await service.isDeviceRevoked(42, 2)).toBe(false); // loads cache
+      service.markDeviceRevokedInCache(42, 2);
+      expect(await service.isDeviceRevoked(42, 2)).toBe(true);
+      expect(deviceRepo.find).toHaveBeenCalledTimes(1);
     });
   });
 });

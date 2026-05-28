@@ -136,6 +136,18 @@ export class DeviceLinkService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DeviceLinkService.name);
   private cleanupInterval?: NodeJS.Timeout;
 
+  // Revocation is checked on every authenticated REST request and socket
+  // connect (JwtStrategy + AuthenticatedSocketAdapter). A DB query per request
+  // hurts the low-power self-hosted target, so we keep the (small, monotonic)
+  // set of revoked `${userId}:${deviceId}` keys in memory. A device is never
+  // un-revoked — a new device always gets a fresh monotonic deviceId — so the
+  // set only grows. It is rebuilt from the DB on a short TTL to bound
+  // cross-instance staleness in cloud (multi-replica) deployments; the local
+  // revoke path also pokes it (markDeviceRevokedInCache) for instant effect.
+  private revokedCache = new Set<string>();
+  private revokedCacheAt = 0;
+  private static readonly REVOKED_CACHE_TTL_MS = 30_000;
+
   // Hook used by the chat gateway to broadcast deviceLinked/deviceRevoked
   // to peers and to the device's own sockets — wired up at module init time
   // to avoid a circular dependency.
@@ -385,7 +397,7 @@ export class DeviceLinkService implements OnModuleInit, OnModuleDestroy {
       return {
         status: 'pubkey-shared',
         primaryEphemeralPublicKey: row.primaryEphemeralPubKey ?? undefined,
-        primaryUserId: row.primaryUserId ?? undefined,
+        primaryUserId: idToString(row.primaryUserId),
         identityKeyPub,
       };
     }
@@ -400,25 +412,32 @@ export class DeviceLinkService implements OnModuleInit, OnModuleDestroy {
     const payloadBase64 = row.encryptedPayload
       ? Buffer.from(row.encryptedPayload).toString('base64')
       : undefined;
-    const response: LinkResultResponse = {
+
+    // One-time-use, race-safe: atomically flip completed→consumed and drop the
+    // sensitive material in a single conditional UPDATE. Only the first of N
+    // concurrent polls gets `affected === 1`; the losers fall through to
+    // SESSION_ALREADY_CONSUMED and never receive the payload in their response.
+    const claim = await this.sessionRepo.update(
+      { sessionId, status: DeviceLinkSessionStatus.COMPLETED },
+      {
+        status: DeviceLinkSessionStatus.CONSUMED,
+        consumedAt: Date.now(),
+        encryptedPayload: null,
+        primaryEphemeralPubKey: null,
+      },
+    );
+    if (!claim.affected) {
+      throw new SessionAlreadyConsumedException();
+    }
+
+    return {
       status: 'completed',
       assignedDeviceId: row.assignedDeviceId ?? undefined,
       encryptedPayload: payloadBase64,
       primaryEphemeralPublicKey: row.primaryEphemeralPubKey ?? undefined,
-      primaryUserId: row.primaryUserId ?? undefined,
+      primaryUserId: idToString(row.primaryUserId),
       identityKeyPub,
     };
-
-    // One-time-use: drop sensitive material from storage as soon as the new
-    // device reads it. Keep the row in 'consumed' state so a second read
-    // gets the dedicated error code (not a generic "not found").
-    row.status = DeviceLinkSessionStatus.CONSUMED;
-    row.consumedAt = Date.now();
-    row.encryptedPayload = null;
-    row.primaryEphemeralPubKey = null;
-    await this.sessionRepo.save(row);
-
-    return response;
   }
 
   /**
@@ -483,10 +502,36 @@ export class DeviceLinkService implements OnModuleInit, OnModuleDestroy {
   }
 
   async isDeviceRevoked(userId: number, deviceId: number): Promise<boolean> {
-    const device = await this.deviceRepo.findOne({
-      where: { userId, deviceId },
+    await this.ensureRevokedCache();
+    return this.revokedCache.has(`${userId}:${deviceId}`);
+  }
+
+  /**
+   * Record a freshly-revoked device in the in-memory set so the revocation
+   * takes effect on this instance without waiting for the TTL refresh. Called
+   * by DeviceService right after it persists `status = revoked`.
+   */
+  markDeviceRevokedInCache(userId: number, deviceId: number): void {
+    this.revokedCache.add(`${userId}:${deviceId}`);
+  }
+
+  private async ensureRevokedCache(): Promise<void> {
+    if (
+      Date.now() - this.revokedCacheAt <
+      DeviceLinkService.REVOKED_CACHE_TTL_MS
+    ) {
+      return;
+    }
+    const revoked = await this.deviceRepo.find({
+      where: { status: UserDeviceStatus.REVOKED },
+      select: ['userId', 'deviceId'],
     });
-    return device?.status === UserDeviceStatus.REVOKED;
+    const next = new Set<string>();
+    for (const d of revoked) {
+      next.add(`${d.userId}:${d.deviceId}`);
+    }
+    this.revokedCache = next;
+    this.revokedCacheAt = Date.now();
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -494,10 +539,8 @@ export class DeviceLinkService implements OnModuleInit, OnModuleDestroy {
   // ──────────────────────────────────────────────────────────────────────────
 
   async cleanupExpiredSessions(): Promise<number> {
-    // Soft-expire entries first so the new device can still distinguish
-    // "expired" from "never existed". Hard-delete after a 1h grace window
-    // (only sessions that were never consumed — completed→consumed rows
-    // age out naturally through the `consumed_at < cutoff` path).
+    // Soft-expire `waiting` entries first so the new device can still
+    // distinguish "expired" from "never existed".
     const nowMs = Date.now();
     const expireResult = await this.sessionRepo
       .createQueryBuilder()
@@ -509,10 +552,22 @@ export class DeviceLinkService implements OnModuleInit, OnModuleDestroy {
       })
       .execute();
 
+    // Hard-delete lapsed rows after a 1h grace window. Two disjoint sets:
+    //   1. never-consumed rows (waiting/expired/completed-but-never-polled)
+    //      whose TTL elapsed > 1h ago — keyed on `expires_at`.
+    //   2. consumed rows (a successful pairing) whose `consumed_at` is > 1h
+    //      ago. Sensitive fields are already nulled at consume time; the row
+    //      lingers only so a late double-poll still gets
+    //      SESSION_ALREADY_CONSUMED rather than SESSION_NOT_FOUND. Without
+    //      this second pass consumed rows would accumulate forever.
     const hardDeleteCutoffMs = nowMs - 60 * 60 * 1000;
     await this.sessionRepo.delete({
       expiresAt: LessThan(hardDeleteCutoffMs),
       consumedAt: IsNull(),
+    });
+    await this.sessionRepo.delete({
+      status: DeviceLinkSessionStatus.CONSUMED,
+      consumedAt: LessThan(hardDeleteCutoffMs),
     });
 
     return expireResult.affected ?? 0;
@@ -574,6 +629,12 @@ function base64url(buf: Buffer): string {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
+}
+
+// `primaryUserId` must travel as a UTF-8 string on the wire — it feeds the
+// safety-number HKDF `info` byte-for-byte on both sides (ADR-0004).
+function idToString(id: number | null | undefined): string | undefined {
+  return id != null ? String(id) : undefined;
 }
 
 /**

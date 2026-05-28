@@ -1,7 +1,10 @@
 import { ExecutionContext, HttpException, HttpStatus } from '@nestjs/common';
 import { KeyFetchThrottleGuard } from './key-fetch-throttle.guard';
 
-function makeContext(requesterId: number | string, targetUserId: number | string): ExecutionContext {
+function makeContext(
+  requesterId: number | string,
+  targetUserId: number | string,
+): ExecutionContext {
   const req = {
     user: { userId: requesterId },
     params: { id_user: targetUserId },
@@ -43,7 +46,9 @@ describe('KeyFetchThrottleGuard', () => {
       throw new Error('expected guard to throw');
     } catch (err) {
       expect(err).toBeInstanceOf(HttpException);
-      expect((err as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+      expect((err as HttpException).getStatus()).toBe(
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
   });
 

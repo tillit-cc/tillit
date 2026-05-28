@@ -54,6 +54,11 @@ export class AddMultiDevicePairing1747000000000 implements MigrationInterface {
     await queryRunner.query(
       `CREATE INDEX IF NOT EXISTS IDX_device_link_sessions_expires ON device_link_sessions (expires_at)`,
     );
+    // SQLite does not auto-index FK columns (MariaDB does), so the
+    // ON DELETE CASCADE on user deletion would otherwise full-scan this table.
+    await queryRunner.query(
+      `CREATE INDEX IF NOT EXISTS IDX_device_link_sessions_primary_user ON device_link_sessions (primary_user_id)`,
+    );
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
