@@ -2,6 +2,8 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -17,6 +19,10 @@ import { ChallengeStore } from './services/challenge.store';
 import { AuthHostService } from './services/auth-host.service';
 import { BanService } from '../modules/ban/ban.service';
 import { PRIMARY_DEVICE_ID } from './dto/device-link.dto';
+import {
+  RECOVERY_SCOPE,
+  type JwtScope,
+} from '../common/types/authenticated-request';
 
 @Injectable()
 export class AuthService {
@@ -67,6 +73,13 @@ export class AuthService {
     if (!user) {
       // 3. Create new user — first account always starts from the primary
       // device. A linked device can never bootstrap a brand-new user row.
+      // Recovery requires an existing user; reject early.
+      if (dto.recoverPrimary) {
+        throw new ForbiddenException(
+          'Recovery requires an existing user',
+          'RECOVERY_REQUIRES_EXISTING_USER',
+        );
+      }
       if (dto.deviceId !== PRIMARY_DEVICE_ID) {
         throw new UnauthorizedException('Invalid device for new account');
       }
@@ -87,7 +100,43 @@ export class AuthService {
     // therefore no longer claim `deviceId: 1` and self-promote to primary
     // (finding #4). Before a key is bound we stay in transition mode: the
     // legacy deviceId check applies, unless DEVICE_AUTH_REQUIRED forces upgrade.
-    if (!isNewUser) {
+    //
+    // The `recoverPrimary` branch is the documented escape hatch from the
+    // chicken-and-egg "lost device-auth priv, can't log in to rotate it"
+    // deadlock (OQ-1, _shared/api/per-device-server-auth.md). It skips the
+    // device-auth check and mints a recovery-scoped JWT that ONLY the
+    // primary-recovery POST /keys call accepts — every other endpoint refuses
+    // it. Strict preconditions keep the bypass narrow.
+    let scope: JwtScope | undefined;
+    if (dto.recoverPrimary) {
+      if (isNewUser) {
+        // Defense-in-depth — branch above already rejected, but keep the guard
+        // explicit so future refactors can't accidentally widen the surface.
+        throw new ForbiddenException(
+          'Recovery requires an existing user',
+          'RECOVERY_REQUIRES_EXISTING_USER',
+        );
+      }
+      if (dto.deviceId !== PRIMARY_DEVICE_ID) {
+        throw new ForbiddenException(
+          'Recovery is only valid for the primary device',
+          'RECOVERY_PRIMARY_ONLY',
+        );
+      }
+      const primary = await this.userDeviceRepository.findOne({
+        where: { userId: user.id, deviceId: PRIMARY_DEVICE_ID },
+      });
+      if (!primary?.authPublicKey) {
+        // Transition-mode login already works for this device — no recovery
+        // needed. We refuse so the client falls back to the normal flow
+        // instead of silently triggering a wipe-linked side-effect later.
+        throw new ConflictException(
+          'Primary recovery is not needed for this device',
+          'PRIMARY_RECOVERY_NOT_NEEDED',
+        );
+      }
+      scope = RECOVERY_SCOPE;
+    } else if (!isNewUser) {
       const device = await this.userDeviceRepository.findOne({
         where: { userId: user.id, deviceId: dto.deviceId },
       });
@@ -116,14 +165,18 @@ export class AuthService {
     // with a fresh registrationId that intentionally differs from the
     // primary's (see _shared/api/multi-device-linking.md).
 
-    // 5. Save/update signed pre-key (skip for banned users)
-    if (!banned) {
+    // 5. Save/update signed pre-key (skip for banned users and for the
+    // recovery flow — the new bundle arrives at `POST /keys` together with
+    // the new device-auth key. Saving here would consume the challenge for a
+    // signed pre-key the client may not even have generated yet).
+    if (!banned && !dto.recoverPrimary) {
       await this.saveSignedPreKey(user.id, dto);
     }
 
     // 6. Generate JWT (carries deviceId so server can forward it on
-    // sender-key flows without an extra DB lookup per message)
-    const accessToken = this.generateToken(user, dto.deviceId);
+    // sender-key flows without an extra DB lookup per message). Recovery
+    // tokens carry `scope: 'recover'` so guards can confine them.
+    const accessToken = this.generateToken(user, dto.deviceId, scope);
 
     return {
       accessToken,
@@ -294,12 +347,17 @@ export class AuthService {
    * Generate JWT token for user.
    * `deviceId` is embedded so the server can forward it on sender-key
    * flows (H-04) without an extra DB lookup per relayed message.
+   * `scope` is set only for the per-device-auth recovery token (ADR-0010
+   * OQ-1) — every other token is unscoped (full access for the device).
    */
-  generateToken(user: User, deviceId: number): string {
-    const payload = {
+  generateToken(user: User, deviceId: number, scope?: JwtScope): string {
+    const payload: { sub: number; deviceId: number; scope?: JwtScope } = {
       sub: user.id,
       deviceId,
     };
+    if (scope) {
+      payload.scope = scope;
+    }
 
     return this.jwtService.sign(payload, {
       privateKey: this.jwtConfig.privateKey,
@@ -331,9 +389,16 @@ export class AuthService {
   }
 
   /**
-   * Validate JWT token
+   * Validate JWT token. `scope` is propagated so the caller (socket adapter,
+   * allow-banned guard) can refuse a recovery-scoped token — the recovery
+   * JWT is only usable on `POST /keys` and must not authenticate sockets,
+   * account deletion, etc.
    */
-  validateJWT(token: string): { sub: number; deviceId?: number } {
+  validateJWT(token: string): {
+    sub: number;
+    deviceId?: number;
+    scope?: JwtScope;
+  } {
     try {
       return this.jwtService.verify(token, {
         publicKey: this.jwtConfig.publicKey,

@@ -1,4 +1,10 @@
-import { IsString, IsNumber, MaxLength, IsOptional } from 'class-validator';
+import {
+  IsString,
+  IsNumber,
+  MaxLength,
+  IsOptional,
+  IsBoolean,
+} from 'class-validator';
 
 export class IdentityAuthDto {
   @IsString()
@@ -38,6 +44,14 @@ export class IdentityAuthDto {
   @IsString()
   @MaxLength(500)
   deviceAuthSignature?: string;
+
+  // Primary recovery (ADR-0010 OQ-1): when true and `deviceId === 1`, the
+  // device-auth signature check is skipped and the server returns a
+  // recovery-scoped JWT usable only on `POST /keys { recoverPrimary: true,
+  // deviceId: 1, deviceAuthPublicKey }`. See per-device-server-auth.md.
+  @IsOptional()
+  @IsBoolean()
+  recoverPrimary?: boolean;
 }
 
 export interface IdentityAuthResponse {

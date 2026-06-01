@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { UnauthorizedException, BadRequestException } from '@nestjs/common';
+import {
+  UnauthorizedException,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { User } from '../entities/user.entity';
@@ -423,6 +427,113 @@ describe('AuthService', () => {
 
       if (prev === undefined) delete process.env.DEVICE_AUTH_REQUIRED;
       else process.env.DEVICE_AUTH_REQUIRED = prev;
+    });
+  });
+
+  describe('authenticateByIdentity — primary recovery (ADR-0010 OQ-1)', () => {
+    const { PublicKey } = require('@signalapp/libsignal-client');
+
+    afterEach(() => {
+      PublicKey.deserialize.mockReturnValue({
+        verify: jest.fn().mockReturnValue(true),
+      });
+    });
+
+    it('mints a recovery-scoped JWT, skips device-auth verify and defers signed pre-key save', async () => {
+      // Identity sig valid; device-auth must NOT be verified — only one
+      // PublicKey.deserialize call (the identity one) is expected.
+      const verifyMock = jest.fn().mockReturnValue(true);
+      PublicKey.deserialize.mockReturnValue({ verify: verifyMock });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+      userDeviceRepo.findOne.mockResolvedValue(
+        makeUserDevice({
+          userId: 1,
+          deviceId: 1,
+          authPublicKey: 'old-primary-auth-pub',
+        }),
+      );
+
+      const result = await service.authenticateByIdentity(
+        makeDto({ deviceId: 1, recoverPrimary: true }),
+        TEST_HOST,
+      );
+
+      expect(result.accessToken).toBe('jwt-token');
+      // Only the identity signature is verified; deviceAuthSignature is skipped.
+      expect(verifyMock).toHaveBeenCalledTimes(1);
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        { sub: 1, deviceId: 1, scope: 'recover' },
+        expect.any(Object),
+      );
+      // Signed pre-key save is deferred to the subsequent POST /keys call —
+      // the recovery login carries only the identity proof.
+      expect(signalKeyRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects recovery with deviceId != 1 as RECOVERY_PRIMARY_ONLY', async () => {
+      PublicKey.deserialize.mockReturnValue({
+        verify: jest.fn().mockReturnValue(true),
+      });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+
+      await expect(
+        service.authenticateByIdentity(
+          makeDto({ deviceId: 2, recoverPrimary: true }),
+          TEST_HOST,
+        ),
+      ).rejects.toMatchObject({
+        response: { error: 'RECOVERY_PRIMARY_ONLY' },
+      });
+    });
+
+    it('rejects recovery for an unknown identity as RECOVERY_REQUIRES_EXISTING_USER', async () => {
+      PublicKey.deserialize.mockReturnValue({
+        verify: jest.fn().mockReturnValue(true),
+      });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(null); // unknown user
+
+      await expect(
+        service.authenticateByIdentity(
+          makeDto({ deviceId: 1, recoverPrimary: true }),
+          TEST_HOST,
+        ),
+      ).rejects.toMatchObject({
+        response: { error: 'RECOVERY_REQUIRES_EXISTING_USER' },
+      });
+      expect(userRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects recovery when the primary device has no auth key bound (transition mode already works)', async () => {
+      PublicKey.deserialize.mockReturnValue({
+        verify: jest.fn().mockReturnValue(true),
+      });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+      userDeviceRepo.findOne.mockResolvedValue(
+        makeUserDevice({ userId: 1, deviceId: 1, authPublicKey: null }),
+      );
+
+      await expect(
+        service.authenticateByIdentity(
+          makeDto({ deviceId: 1, recoverPrimary: true }),
+          TEST_HOST,
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
     });
   });
 

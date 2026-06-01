@@ -5,6 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AuthService } from '../auth.service';
+import { RECOVERY_SCOPE } from '../../common/types/authenticated-request';
 
 /**
  * Variant of JwtAuthGuard that skips the ban check.
@@ -33,6 +34,15 @@ export class JwtAuthAllowBannedGuard implements CanActivate {
 
     if (!payload?.sub || typeof payload.sub !== 'number') {
       throw new UnauthorizedException('Invalid token payload');
+    }
+
+    // Recovery-scoped tokens (ADR-0010 OQ-1) must never reach
+    // account-deletion or anything else outside POST /keys recover-primary.
+    if (payload.scope === RECOVERY_SCOPE) {
+      throw new UnauthorizedException(
+        'Recovery token not allowed for this endpoint',
+        'RECOVERY_TOKEN_DENIED',
+      );
     }
 
     const deviceId =

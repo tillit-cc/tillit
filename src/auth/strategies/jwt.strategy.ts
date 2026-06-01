@@ -4,6 +4,10 @@ import { Strategy, ExtractJwt } from 'passport-jwt';
 import { JwtConfigService } from '../../config/jwt/config.service';
 import { BanService } from '../../modules/ban/ban.service';
 import { DeviceLinkService } from '../services/device-link.service';
+import {
+  RECOVERY_SCOPE,
+  type JwtScope,
+} from '../../common/types/authenticated-request';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -19,7 +23,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: { sub?: number; deviceId?: number }) {
+  async validate(payload: { sub?: number; deviceId?: number; scope?: string }) {
     if (!payload.sub || typeof payload.sub !== 'number') {
       throw new UnauthorizedException('Invalid token payload');
     }
@@ -42,9 +46,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Device revoked', 'DEVICE_REVOKED');
     }
 
+    // Pass `scope` through to req.user so the JwtAuthGuard / per-handler
+    // metadata can confine recovery-scoped tokens (ADR-0010 OQ-1). Only
+    // explicitly-known scopes propagate; anything unknown is dropped.
+    const scope: JwtScope | undefined =
+      payload.scope === RECOVERY_SCOPE ? RECOVERY_SCOPE : undefined;
+
     return {
       userId: payload.sub,
       deviceId,
+      ...(scope ? { scope } : {}),
     };
   }
 }
