@@ -10,7 +10,6 @@ import {
   UserDeviceStatus,
 } from '../../../entities/user-device.entity';
 import { DeviceLinkService } from '../../../auth/services/device-link.service';
-import { DeviceService } from '../../../auth/services/device.service';
 import {
   createMockRepository,
   makeUser,
@@ -26,7 +25,6 @@ describe('KeysService', () => {
   let txKeyRepo: ReturnType<typeof createMockRepository>;
   let mockDataSource: { transaction: jest.Mock };
   let deviceLinkService: { markDeviceActiveAfterKeyUpload: jest.Mock };
-  let deviceService: { revokeAllLinkedForUser: jest.Mock };
 
   beforeEach(async () => {
     signalKeyRepo = createMockRepository();
@@ -43,9 +41,6 @@ describe('KeysService', () => {
     deviceLinkService = {
       markDeviceActiveAfterKeyUpload: jest.fn().mockResolvedValue(undefined),
     };
-    deviceService = {
-      revokeAllLinkedForUser: jest.fn().mockResolvedValue(undefined),
-    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -55,7 +50,6 @@ describe('KeysService', () => {
         { provide: getRepositoryToken(UserDevice), useValue: userDeviceRepo },
         { provide: DataSource, useValue: mockDataSource },
         { provide: DeviceLinkService, useValue: deviceLinkService },
-        { provide: DeviceService, useValue: deviceService },
       ],
     }).compile();
 
@@ -355,7 +349,6 @@ describe('KeysService', () => {
       expect(userDeviceRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ authPublicKey: 'device-auth-pub' }),
       );
-      expect(deviceService.revokeAllLinkedForUser).not.toHaveBeenCalled();
     });
 
     it('binds the device-auth key on a new device row', async () => {
@@ -396,7 +389,6 @@ describe('KeysService', () => {
           'same-key',
         ),
       ).resolves.toBeUndefined();
-      expect(deviceService.revokeAllLinkedForUser).not.toHaveBeenCalled();
     });
 
     it('DEVICE_AUTH_MISMATCH on a silent re-bind with a different key', async () => {
@@ -417,54 +409,6 @@ describe('KeysService', () => {
           'new-key',
         ),
       ).rejects.toMatchObject({ response: { error: 'DEVICE_AUTH_MISMATCH' } });
-      expect(deviceService.revokeAllLinkedForUser).not.toHaveBeenCalled();
-    });
-
-    it('recoverPrimary re-binds deviceId=1 and wipes the linked devices', async () => {
-      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
-      const primaryRow = makeUserDevice({
-        userId: 1,
-        deviceId: 1,
-        authPublicKey: 'old-key',
-      });
-      userDeviceRepo.findOne.mockResolvedValue(primaryRow);
-
-      await service.uploadKeys(
-        1,
-        1,
-        'id-key',
-        123,
-        undefined,
-        undefined,
-        undefined,
-        'new-key',
-        true, // recoverPrimary
-      );
-
-      expect(primaryRow.authPublicKey).toBe('new-key');
-      expect(deviceService.revokeAllLinkedForUser).toHaveBeenCalledWith(1);
-    });
-
-    it('does not allow recoverPrimary to re-bind a non-primary device', async () => {
-      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
-      userDeviceRepo.findOne.mockResolvedValue(
-        makeUserDevice({ userId: 1, deviceId: 2, authPublicKey: 'old-key' }),
-      );
-
-      await expect(
-        service.uploadKeys(
-          1,
-          2,
-          'id-key',
-          123,
-          undefined,
-          undefined,
-          undefined,
-          'new-key',
-          true, // recoverPrimary ignored for deviceId !== 1
-        ),
-      ).rejects.toMatchObject({ response: { error: 'DEVICE_AUTH_MISMATCH' } });
-      expect(deviceService.revokeAllLinkedForUser).not.toHaveBeenCalled();
     });
   });
 });

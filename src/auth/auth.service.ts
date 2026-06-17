@@ -2,8 +2,6 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
-  ForbiddenException,
-  ConflictException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -19,10 +17,11 @@ import { ChallengeStore } from './services/challenge.store';
 import { AuthHostService } from './services/auth-host.service';
 import { BanService } from '../modules/ban/ban.service';
 import { PRIMARY_DEVICE_ID } from './dto/device-link.dto';
-import {
-  RECOVERY_SCOPE,
-  type JwtScope,
-} from '../common/types/authenticated-request';
+
+// Liveness lock (ADR-0011): how recently the primary's lastActiveAt must have
+// been written before another authenticated hit bothers updating it again.
+// Keeps the anchor reasonably fresh without a DB write per request.
+const PRIMARY_LIVENESS_TOUCH_THROTTLE_MS = 60 * 60 * 1000; // 1h
 
 @Injectable()
 export class AuthService {
@@ -73,13 +72,6 @@ export class AuthService {
     if (!user) {
       // 3. Create new user — first account always starts from the primary
       // device. A linked device can never bootstrap a brand-new user row.
-      // Recovery requires an existing user; reject early.
-      if (dto.recoverPrimary) {
-        throw new ForbiddenException(
-          'Recovery requires an existing user',
-          'RECOVERY_REQUIRES_EXISTING_USER',
-        );
-      }
       if (dto.deviceId !== PRIMARY_DEVICE_ID) {
         throw new UnauthorizedException('Invalid device for new account');
       }
@@ -100,43 +92,7 @@ export class AuthService {
     // therefore no longer claim `deviceId: 1` and self-promote to primary
     // (finding #4). Before a key is bound we stay in transition mode: the
     // legacy deviceId check applies, unless DEVICE_AUTH_REQUIRED forces upgrade.
-    //
-    // The `recoverPrimary` branch is the documented escape hatch from the
-    // chicken-and-egg "lost device-auth priv, can't log in to rotate it"
-    // deadlock (OQ-1, _shared/api/per-device-server-auth.md). It skips the
-    // device-auth check and mints a recovery-scoped JWT that ONLY the
-    // primary-recovery POST /keys call accepts — every other endpoint refuses
-    // it. Strict preconditions keep the bypass narrow.
-    let scope: JwtScope | undefined;
-    if (dto.recoverPrimary) {
-      if (isNewUser) {
-        // Defense-in-depth — branch above already rejected, but keep the guard
-        // explicit so future refactors can't accidentally widen the surface.
-        throw new ForbiddenException(
-          'Recovery requires an existing user',
-          'RECOVERY_REQUIRES_EXISTING_USER',
-        );
-      }
-      if (dto.deviceId !== PRIMARY_DEVICE_ID) {
-        throw new ForbiddenException(
-          'Recovery is only valid for the primary device',
-          'RECOVERY_PRIMARY_ONLY',
-        );
-      }
-      const primary = await this.userDeviceRepository.findOne({
-        where: { userId: user.id, deviceId: PRIMARY_DEVICE_ID },
-      });
-      if (!primary?.authPublicKey) {
-        // Transition-mode login already works for this device — no recovery
-        // needed. We refuse so the client falls back to the normal flow
-        // instead of silently triggering a wipe-linked side-effect later.
-        throw new ConflictException(
-          'Primary recovery is not needed for this device',
-          'PRIMARY_RECOVERY_NOT_NEEDED',
-        );
-      }
-      scope = RECOVERY_SCOPE;
-    } else if (!isNewUser) {
+    if (!isNewUser) {
       const device = await this.userDeviceRepository.findOne({
         where: { userId: user.id, deviceId: dto.deviceId },
       });
@@ -165,18 +121,25 @@ export class AuthService {
     // with a fresh registrationId that intentionally differs from the
     // primary's (see _shared/api/multi-device-linking.md).
 
-    // 5. Save/update signed pre-key (skip for banned users and for the
-    // recovery flow — the new bundle arrives at `POST /keys` together with
-    // the new device-auth key. Saving here would consume the challenge for a
-    // signed pre-key the client may not even have generated yet).
-    if (!banned && !dto.recoverPrimary) {
+    // 4b. Liveness lock (ADR-0011). The primary is the account's liveness
+    // anchor: the primary refreshes it on login, a linked device is refused if
+    // the primary has gone dark past the threshold. Soft + reversible.
+    if (!isNewUser) {
+      if (dto.deviceId === PRIMARY_DEVICE_ID) {
+        await this.touchPrimaryLiveness(user.id);
+      } else {
+        await this.assertPrimaryActive(user.id);
+      }
+    }
+
+    // 5. Save/update signed pre-key (skip for banned users)
+    if (!banned) {
       await this.saveSignedPreKey(user.id, dto);
     }
 
     // 6. Generate JWT (carries deviceId so server can forward it on
-    // sender-key flows without an extra DB lookup per message). Recovery
-    // tokens carry `scope: 'recover'` so guards can confine them.
-    const accessToken = this.generateToken(user, dto.deviceId, scope);
+    // sender-key flows without an extra DB lookup per message)
+    const accessToken = this.generateToken(user, dto.deviceId);
 
     return {
       accessToken,
@@ -314,6 +277,62 @@ export class AuthService {
   }
 
   /**
+   * Liveness lock window (ADR-0011): how long the primary may stay dark before
+   * its linked devices are locked out. Default 7 days.
+   */
+  private primaryLivenessMaxIdleMs(): number {
+    return parseInt(
+      process.env.PRIMARY_LIVENESS_MAX_IDLE_MS ||
+        String(7 * 24 * 60 * 60 * 1000),
+      10,
+    );
+  }
+
+  /**
+   * Refresh the primary's liveness anchor (ADR-0011). Throttled: only writes
+   * when the stored value is older than the touch window, so a busy primary
+   * doesn't take a DB write on every authenticated hit.
+   */
+  private async touchPrimaryLiveness(userId: number): Promise<void> {
+    const primary = await this.userDeviceRepository.findOne({
+      where: { userId, deviceId: PRIMARY_DEVICE_ID },
+    });
+    if (!primary) return;
+    const now = Date.now();
+    const last = primary.lastActiveAt ? primary.lastActiveAt.getTime() : 0;
+    if (now - last < PRIMARY_LIVENESS_TOUCH_THROTTLE_MS) return;
+    primary.lastActiveAt = new Date(now);
+    await this.userDeviceRepository.save(primary);
+  }
+
+  /**
+   * Liveness lock enforcement (ADR-0011): refuse a linked device when the
+   * primary has been idle past the threshold. Soft + reversible — the primary
+   * coming back online refreshes `lastActiveAt` and unlocks the linked devices,
+   * no re-pairing. A primary row with no `lastActiveAt` yet (pre-rollout, or no
+   * recorded activity) is treated as fresh so the deploy doesn't lock anyone
+   * out; it self-heals on the primary's next login/connect.
+   */
+  async assertPrimaryActive(userId: number): Promise<void> {
+    const primary = await this.userDeviceRepository.findOne({
+      where: { userId, deviceId: PRIMARY_DEVICE_ID },
+    });
+    if (!primary || !primary.lastActiveAt) return; // grace
+    const idle = Date.now() - primary.lastActiveAt.getTime();
+    if (idle > this.primaryLivenessMaxIdleMs()) {
+      throw new UnauthorizedException(
+        'Primary device inactive',
+        'PRIMARY_INACTIVE',
+      );
+    }
+  }
+
+  /** Public liveness refresh for the primary (used on token refresh). */
+  async refreshPrimaryLiveness(userId: number): Promise<void> {
+    await this.touchPrimaryLiveness(userId);
+  }
+
+  /**
    * Save or update signed pre-key for user
    */
   private async saveSignedPreKey(
@@ -347,17 +366,12 @@ export class AuthService {
    * Generate JWT token for user.
    * `deviceId` is embedded so the server can forward it on sender-key
    * flows (H-04) without an extra DB lookup per relayed message.
-   * `scope` is set only for the per-device-auth recovery token (ADR-0010
-   * OQ-1) — every other token is unscoped (full access for the device).
    */
-  generateToken(user: User, deviceId: number, scope?: JwtScope): string {
-    const payload: { sub: number; deviceId: number; scope?: JwtScope } = {
+  generateToken(user: User, deviceId: number): string {
+    const payload = {
       sub: user.id,
       deviceId,
     };
-    if (scope) {
-      payload.scope = scope;
-    }
 
     return this.jwtService.sign(payload, {
       privateKey: this.jwtConfig.privateKey,
@@ -383,22 +397,23 @@ export class AuthService {
       throw new UnauthorizedException('User is banned', 'BANNED');
     }
 
+    // Liveness lock (ADR-0011): the primary refreshes its anchor, a linked
+    // device is refused if the primary has gone dark past the threshold.
+    if (deviceId === PRIMARY_DEVICE_ID) {
+      await this.touchPrimaryLiveness(userId);
+    } else {
+      await this.assertPrimaryActive(userId);
+    }
+
     const accessToken = this.generateToken(user, deviceId);
 
     return { accessToken };
   }
 
   /**
-   * Validate JWT token. `scope` is propagated so the caller (socket adapter,
-   * allow-banned guard) can refuse a recovery-scoped token — the recovery
-   * JWT is only usable on `POST /keys` and must not authenticate sockets,
-   * account deletion, etc.
+   * Validate JWT token
    */
-  validateJWT(token: string): {
-    sub: number;
-    deviceId?: number;
-    scope?: JwtScope;
-  } {
+  validateJWT(token: string): { sub: number; deviceId?: number } {
     try {
       return this.jwtService.verify(token, {
         publicKey: this.jwtConfig.publicKey,

@@ -157,27 +157,6 @@ export class DeviceService {
   // ──────────────────────────────────────────────────────────────────────────
   // Primary recovery (ADR-0010 OQ-1)
   // ──────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Revoke every linked device of a user (deviceId !== primary). Used by the
-   * primary-recovery flow: when the primary re-binds its device-auth key after
-   * losing it, all linked devices are wiped (clean slate — the primary device
-   * changed, so trust is re-established from scratch).
-   */
-  async revokeAllLinkedForUser(userId: number): Promise<void> {
-    const devices = await this.deviceRepo.find({
-      where: [
-        { userId, status: UserDeviceStatus.ACTIVE },
-        { userId, status: UserDeviceStatus.PENDING_LINK },
-      ],
-    });
-    for (const device of devices) {
-      if (device.deviceId === PRIMARY_DEVICE_ID) continue;
-      await this.revokeInternal(device, false);
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
   // Internals
   // ──────────────────────────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import { AuthService } from '../auth/auth.service';
 import { BanService } from '../modules/ban/ban.service';
 import { DeviceLinkService } from '../auth/services/device-link.service';
-import { RECOVERY_SCOPE } from '../common/types/authenticated-request';
+import { PRIMARY_DEVICE_ID } from '../auth/dto/device-link.dto';
 
 export class AuthenticatedSocketAdapter extends IoAdapter {
   private authService: AuthService;
@@ -52,13 +52,6 @@ export class AuthenticatedSocketAdapter extends IoAdapter {
         // Validate JWT token
         const payload = this.authService.validateJWT(token);
 
-        // Recovery-scoped JWTs (ADR-0010 OQ-1) are confined to the
-        // primary-recovery POST /keys call. WebSocket auth must refuse them
-        // outright — a recovery token has no business holding a chat session.
-        if (payload.scope === RECOVERY_SCOPE) {
-          return next(new Error('RECOVERY_TOKEN_DENIED'));
-        }
-
         // Check if user is banned
         if (await this.banService.isUserBanned(payload.sub)) {
           return next(new Error('BANNED'));
@@ -77,6 +70,20 @@ export class AuthenticatedSocketAdapter extends IoAdapter {
           await this.deviceLinkService.isDeviceRevoked(payload.sub, deviceId)
         ) {
           return next(new Error('DEVICE_REVOKED'));
+        }
+
+        // Liveness lock (ADR-0011): the primary refreshes its anchor on
+        // connect; a linked device is refused while the primary is dark past
+        // the threshold. Soft + reversible — surfaced as a distinct error so
+        // the client shows "reconnect your primary" rather than a hard logout.
+        if (deviceId === PRIMARY_DEVICE_ID) {
+          await this.authService.refreshPrimaryLiveness(payload.sub);
+        } else {
+          try {
+            await this.authService.assertPrimaryActive(payload.sub);
+          } catch {
+            return next(new Error('PRIMARY_INACTIVE'));
+          }
         }
 
         // Attach user info to socket

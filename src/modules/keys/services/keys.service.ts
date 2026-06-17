@@ -15,7 +15,6 @@ import {
 } from '../../../entities/user-device.entity';
 import { KeyDto, KeyStatusDto, SignedKeyDto } from '../dto/keys.dto';
 import { DeviceLinkService } from '../../../auth/services/device-link.service';
-import { DeviceService } from '../../../auth/services/device.service';
 
 @Injectable()
 export class KeysService {
@@ -30,7 +29,6 @@ export class KeysService {
     private userDeviceRepository: Repository<UserDevice>,
     private dataSource: DataSource,
     private deviceLinkService: DeviceLinkService,
-    private deviceService: DeviceService,
   ) {}
 
   /**
@@ -45,7 +43,6 @@ export class KeysService {
     preKeys?: KeyDto[],
     kyberPreKeys?: KeyDto[],
     deviceAuthPublicKey?: string,
-    recoverPrimary?: boolean,
   ): Promise<void> {
     // Verify user exists
     const user = await this.userRepository.findOne({ where: { id: userId } });
@@ -63,18 +60,12 @@ export class KeysService {
         registrationId,
         identityPublicKey,
         deviceAuthPublicKey,
-        recoverPrimary,
       );
     } else if (deviceAuthPublicKey !== undefined) {
       // Auth-key-only registration on an existing device (e.g. a client that
       // upgrades and registers its device-auth key without re-uploading the
       // identity). No-op if the row doesn't exist yet.
-      await this.bindDeviceAuthKeyOnly(
-        userId,
-        deviceId,
-        deviceAuthPublicKey,
-        recoverPrimary,
-      );
+      await this.bindDeviceAuthKeyOnly(userId, deviceId, deviceAuthPublicKey);
     }
 
     if (signedPreKey) {
@@ -500,7 +491,6 @@ export class KeysService {
     registrationId: number,
     identityPublicKey: string,
     deviceAuthPublicKey?: string,
-    recoverPrimary?: boolean,
   ): Promise<void> {
     const existing = await this.userDeviceRepository.findOne({
       where: { userId, deviceId },
@@ -510,16 +500,8 @@ export class KeysService {
       existing.registrationId = registrationId;
       existing.identityPublicKey = identityPublicKey;
       existing.lastActiveAt = new Date();
-      const wipeLinked = this.applyDeviceAuthKey(
-        existing,
-        deviceId,
-        deviceAuthPublicKey,
-        recoverPrimary,
-      );
+      this.applyDeviceAuthKey(existing, deviceAuthPublicKey);
       await this.userDeviceRepository.save(existing);
-      if (wipeLinked) {
-        await this.deviceService.revokeAllLinkedForUser(userId);
-      }
       return;
     }
 
@@ -542,47 +524,32 @@ export class KeysService {
     userId: number,
     deviceId: number,
     deviceAuthPublicKey: string,
-    recoverPrimary?: boolean,
   ): Promise<void> {
     const existing = await this.userDeviceRepository.findOne({
       where: { userId, deviceId },
     });
     if (!existing) return;
-    const wipeLinked = this.applyDeviceAuthKey(
-      existing,
-      deviceId,
-      deviceAuthPublicKey,
-      recoverPrimary,
-    );
+    this.applyDeviceAuthKey(existing, deviceAuthPublicKey);
     await this.userDeviceRepository.save(existing);
-    if (wipeLinked) {
-      await this.deviceService.revokeAllLinkedForUser(userId);
-    }
   }
 
   /**
-   * Apply the per-device server-auth key (ADR-0010) to a device row. Returns
-   * true when the caller must wipe the user's linked devices (primary
-   * recovery). Mutates `device.authPublicKey`. TOFU on first bind; idempotent
-   * for the same key; `DEVICE_AUTH_MISMATCH` on a silent re-bind attempt.
+   * Apply the per-device server-auth key (ADR-0010) to a device row. Mutates
+   * `device.authPublicKey`. TOFU on first bind; idempotent for the same key;
+   * `DEVICE_AUTH_MISMATCH` on a silent re-bind attempt. There is no recovery
+   * override (ADR-0011): a lost primary auth key is not server-recoverable.
    */
   private applyDeviceAuthKey(
     device: UserDevice,
-    deviceId: number,
     deviceAuthPublicKey: string | undefined,
-    recoverPrimary: boolean | undefined,
-  ): boolean {
-    if (deviceAuthPublicKey === undefined) return false;
+  ): void {
+    if (deviceAuthPublicKey === undefined) return;
     if (!device.authPublicKey) {
       device.authPublicKey = deviceAuthPublicKey; // trust-on-first-use bind
-      return false;
+      return;
     }
-    if (device.authPublicKey === deviceAuthPublicKey) return false; // idempotent
-    // Different key on an already-bound device.
-    if (recoverPrimary && deviceId === 1) {
-      device.authPublicKey = deviceAuthPublicKey; // recovery re-bind
-      return true; // signal: wipe linked devices
-    }
+    if (device.authPublicKey === deviceAuthPublicKey) return; // idempotent
+    // Different key on an already-bound device — never silently re-bound.
     throw new ConflictException({
       statusCode: HttpStatus.CONFLICT,
       error: 'DEVICE_AUTH_MISMATCH',

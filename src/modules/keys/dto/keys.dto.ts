@@ -2,7 +2,6 @@ import {
   IsString,
   IsNumber,
   IsArray,
-  IsBoolean,
   ValidateNested,
   IsOptional,
   ArrayMaxSize,
@@ -68,12 +67,6 @@ export class UploadKeysDto {
   @IsString()
   @MaxLength(500)
   deviceAuthPublicKey?: string;
-
-  // Primary recovery (deviceId=1 only): re-bind the device-auth key and revoke
-  // all linked devices. See ADR-0010 OQ-1.
-  @IsOptional()
-  @IsBoolean()
-  recoverPrimary?: boolean;
 }
 
 export class KeyStatusDto {
