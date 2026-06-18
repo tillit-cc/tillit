@@ -328,11 +328,23 @@ export class ChatGateway
       // Reject oversized payloads.
       // Volatile messages carry inline encrypted media, so they get a higher limit.
       // Non-volatile media must use REST /media endpoints.
-      const messageForSize = data.message ?? data.recipients;
-      const payloadSize = Buffer.byteLength(JSON.stringify(messageForSize));
       const maxSize = isVolatile
         ? MAX_WS_VOLATILE_PAYLOAD_BYTES
         : MAX_WS_PAYLOAD_BYTES;
+
+      // For multi-device fan-out, `recipients[]` holds one independent ciphertext
+      // per linked device (each is a full copy of the same message). Bound each
+      // ciphertext individually against the limit — measuring the summed array
+      // would divide the effective cap by the device count and reject otherwise
+      // fine messages once a user has several linked devices.
+      const payloadSize =
+        data.recipients && data.recipients.length > 0
+          ? Math.max(
+              ...data.recipients.map((r) =>
+                Buffer.byteLength(r.ciphertext ?? ''),
+              ),
+            )
+          : Buffer.byteLength(JSON.stringify(data.message ?? {}));
 
       if (payloadSize > maxSize) {
         this.logger.warn(
@@ -465,9 +477,17 @@ export class ChatGateway
     }
 
     try {
-      // Reject oversized payloads
-      const payloadForSize = data.packet ?? data.recipients;
-      const payloadSize = Buffer.byteLength(JSON.stringify(payloadForSize));
+      // Reject oversized payloads. For per-device fan-out, `recipients[]` holds
+      // one independent packet per linked device — bound each packet
+      // individually rather than the summed array (see handleSendMessage).
+      const payloadSize =
+        data.recipients && data.recipients.length > 0
+          ? Math.max(
+              ...data.recipients.map((r) =>
+                Buffer.byteLength(JSON.stringify(r.packet ?? {})),
+              ),
+            )
+          : Buffer.byteLength(JSON.stringify(data.packet ?? {}));
       if (payloadSize > MAX_WS_PAYLOAD_BYTES) {
         this.logger.warn(
           `User ${userId} sent oversized packet (${payloadSize} bytes), rejecting`,

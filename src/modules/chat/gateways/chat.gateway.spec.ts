@@ -26,6 +26,8 @@ describe('ChatGateway', () => {
     deliverPendingToSocket: jest.Mock;
     broadcastToRoomMembers: jest.Mock;
     deliverEnvelopeToRoom: jest.Mock;
+    fanOutToRecipients: jest.Mock;
+    fanOutPacketToRecipients: jest.Mock;
   };
   let roomService: {
     getUserRooms: jest.Mock;
@@ -57,6 +59,16 @@ describe('ChatGateway', () => {
       deliverEnvelopeToRoom: jest.fn().mockResolvedValue({
         delivered: true,
         ackedDeviceKeys: new Set<string>(),
+      }),
+      fanOutToRecipients: jest.fn().mockResolvedValue({
+        delivered: true,
+        messageId: 'msg-fan-1',
+        timestamp: new Date().toISOString(),
+      }),
+      fanOutPacketToRecipients: jest.fn().mockResolvedValue({
+        delivered: true,
+        packetId: 'pkt-fan-1',
+        timestamp: new Date().toISOString(),
       }),
     };
 
@@ -297,6 +309,38 @@ describe('ChatGateway', () => {
       });
 
       expect(result.success).toBe(true);
+    });
+
+    it('should size fan-out recipients per-ciphertext, not the summed array', async () => {
+      const client = makeMockClient(1) as any;
+      // 5 devices × 20KB each = 100KB summed (> 64KB cap) but each is well
+      // under the per-message limit — must be accepted.
+      const recipients = Array.from({ length: 5 }, (_, i) => ({
+        userId: 2,
+        deviceId: i + 1,
+        ciphertext: 'x'.repeat(20 * 1024),
+      }));
+
+      const result = await gateway.handleSendMessage(client, {
+        roomId: 1,
+        recipients,
+      });
+
+      expect(result.success).toBe(true);
+      expect(messageService.fanOutToRecipients).toHaveBeenCalled();
+    });
+
+    it('should reject a fan-out recipient whose ciphertext exceeds the cap', async () => {
+      const client = makeMockClient(1) as any;
+      const result = await gateway.handleSendMessage(client, {
+        roomId: 1,
+        recipients: [
+          { userId: 2, deviceId: 1, ciphertext: 'x'.repeat(65 * 1024) },
+        ],
+      });
+
+      expect(result.error).toContain('Message too large');
+      expect(messageService.fanOutToRecipients).not.toHaveBeenCalled();
     });
   });
 
