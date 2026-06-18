@@ -21,7 +21,9 @@ import { PRIMARY_DEVICE_ID } from './dto/device-link.dto';
 // Liveness lock (ADR-0011): how recently the primary's lastActiveAt must have
 // been written before another authenticated hit bothers updating it again.
 // Keeps the anchor reasonably fresh without a DB write per request.
-const PRIMARY_LIVENESS_TOUCH_THROTTLE_MS = 60 * 60 * 1000; // 1h
+// Exported so the WebSocket gateway can apply the identical throttle when it
+// bumps liveness on in-progress socket activity (backend-0022, defect #2).
+export const PRIMARY_LIVENESS_TOUCH_THROTTLE_MS = 60 * 60 * 1000; // 1h
 
 @Injectable()
 export class AuthService {

@@ -5,9 +5,20 @@ import { RoomService } from '../services/room.service';
 import { SenderKeysService } from '../../sender-keys/services/sender-keys.service';
 import { DeviceLinkService } from '../../../auth/services/device-link.service';
 import { DeviceService } from '../../../auth/services/device.service';
+import { AuthService } from '../../../auth/auth.service';
 import { RedisConfigService } from '../../../config/database/redis/config.service';
 import { ChatEvents } from '../interfaces/chat-events';
 import { makeRoom, makeMockClient } from '../../../test/helpers';
+
+// Mock libsignal-client (native ESM addon) — pulled in transitively via
+// AuthService, which the gateway now injects for the liveness lock.
+jest.mock('@signalapp/libsignal-client', () => ({
+  PublicKey: {
+    deserialize: jest.fn().mockReturnValue({
+      verify: jest.fn().mockReturnValue(true),
+    }),
+  },
+}));
 
 // Mock deployment mode to selfhosted (skip Redis adapter)
 jest.mock('../../../config/deployment-mode', () => ({
@@ -41,6 +52,10 @@ describe('ChatGateway', () => {
   };
   let deviceLinkService: { setNotifier: jest.Mock; isDeviceRevoked: jest.Mock };
   let deviceService: { setNotifier: jest.Mock };
+  let authService: {
+    refreshPrimaryLiveness: jest.Mock;
+    assertPrimaryActive: jest.Mock;
+  };
 
   beforeEach(async () => {
     messageService = {
@@ -92,6 +107,11 @@ describe('ChatGateway', () => {
       setNotifier: jest.fn(),
     };
 
+    authService = {
+      refreshPrimaryLiveness: jest.fn().mockResolvedValue(undefined),
+      assertPrimaryActive: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ChatGateway,
@@ -100,6 +120,7 @@ describe('ChatGateway', () => {
         { provide: SenderKeysService, useValue: senderKeysService },
         { provide: DeviceLinkService, useValue: deviceLinkService },
         { provide: DeviceService, useValue: deviceService },
+        { provide: AuthService, useValue: authService },
         { provide: RedisConfigService, useValue: undefined },
       ],
     }).compile();
@@ -438,6 +459,135 @@ describe('ChatGateway', () => {
       const result = await gateway.handleLeaveRoom(client, { roomId: 1 });
 
       expect(result).toEqual({ error: 'You are not a member of this room' });
+    });
+  });
+
+  // Liveness lock — level-triggered behaviour (ADR-0011, backend-0022).
+  describe('primary liveness anchor (part A)', () => {
+    it('bumps the primary anchor on socket activity (a connected primary stays alive)', async () => {
+      // deviceId 1 = primary. This is the regression for defect #2: a primary
+      // holding a persistent socket must keep itself "alive" via in-session
+      // activity, not only at connect.
+      const primary = makeMockClient(7, 'sock-primary', 1) as any;
+
+      await gateway.handleSendMessage(primary, {
+        roomId: 1,
+        message: { payload: { ciphertext: 'x' } },
+      });
+
+      expect(authService.refreshPrimaryLiveness).toHaveBeenCalledWith(7);
+    });
+
+    it('does NOT bump the anchor for a linked device (a rogue linked device cannot keep itself alive)', async () => {
+      const linked = makeMockClient(7, 'sock-linked', 2) as any;
+
+      await gateway.handleSendMessage(linked, {
+        roomId: 1,
+        message: { payload: { ciphertext: 'x' } },
+      });
+
+      expect(authService.refreshPrimaryLiveness).not.toHaveBeenCalled();
+    });
+
+    it('throttles high-frequency activity to a single anchor write per window', async () => {
+      const primary = makeMockClient(7, 'sock-primary', 1) as any;
+
+      for (let i = 0; i < 50; i++) {
+        await gateway.handleSendMessage(primary, { roomId: 1, message: {} });
+      }
+
+      // In-memory throttle (1h) collapses the burst to one write.
+      expect(authService.refreshPrimaryLiveness).toHaveBeenCalledTimes(1);
+    });
+
+    it('clears the throttle entry on disconnect', () => {
+      const primary = makeMockClient(7, 'sock-primary', 1) as any;
+      gateway.handleDisconnect(primary);
+      // No throw; entry removed so a fresh connection bumps immediately.
+      expect(authService.refreshPrimaryLiveness).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('liveness enforcement sweep (part B)', () => {
+    // Build a fake socket with a `.user` and a spyable disconnect().
+    const fakeSocket = (userId: number, deviceId: number, id: string) => ({
+      id,
+      user: { userId, deviceId },
+      disconnect: jest.fn(),
+    });
+
+    const serverWith = (sockets: any[]) =>
+      ({
+        adapter: jest.fn(),
+        local: { fetchSockets: jest.fn().mockResolvedValue(sockets) },
+      }) as any;
+
+    const sweep = () => (gateway as any).sweepLivenessLockedDevices();
+
+    it('force-disconnects a linked device when the primary has gone stale', async () => {
+      const linked = fakeSocket(7, 2, 'sock-linked');
+      gateway.server = serverWith([linked]);
+      authService.assertPrimaryActive.mockRejectedValue(
+        new Error('PRIMARY_INACTIVE'),
+      );
+
+      await sweep();
+
+      expect(authService.assertPrimaryActive).toHaveBeenCalledWith(7);
+      expect(linked.disconnect).toHaveBeenCalledWith(true);
+    });
+
+    it('disconnects a passive linked device (no outbound traffic required)', async () => {
+      // The stolen-passive case: the device only receives. The sweep does not
+      // depend on it emitting anything.
+      const passive = fakeSocket(9, 3, 'sock-passive');
+      gateway.server = serverWith([passive]);
+      authService.assertPrimaryActive.mockRejectedValue(
+        new Error('PRIMARY_INACTIVE'),
+      );
+
+      await sweep();
+
+      expect(passive.disconnect).toHaveBeenCalledWith(true);
+    });
+
+    it('leaves a linked device connected while the primary is active (no false positive)', async () => {
+      const linked = fakeSocket(7, 2, 'sock-linked');
+      gateway.server = serverWith([linked]);
+      authService.assertPrimaryActive.mockResolvedValue(undefined);
+
+      await sweep();
+
+      expect(linked.disconnect).not.toHaveBeenCalled();
+    });
+
+    it('never disconnects the primary itself (the anchor is exempt)', async () => {
+      const primary = fakeSocket(7, 1, 'sock-primary');
+      gateway.server = serverWith([primary]);
+      // Even if the check would throw, the primary must not be enrolled.
+      authService.assertPrimaryActive.mockRejectedValue(
+        new Error('PRIMARY_INACTIVE'),
+      );
+
+      await sweep();
+
+      expect(authService.assertPrimaryActive).not.toHaveBeenCalled();
+      expect(primary.disconnect).not.toHaveBeenCalled();
+    });
+
+    it('checks each user once even with several linked sockets', async () => {
+      const a = fakeSocket(7, 2, 'a');
+      const b = fakeSocket(7, 3, 'b');
+      gateway.server = serverWith([a, b]);
+      authService.assertPrimaryActive.mockRejectedValue(
+        new Error('PRIMARY_INACTIVE'),
+      );
+
+      await sweep();
+
+      expect(authService.assertPrimaryActive).toHaveBeenCalledTimes(1);
+      expect(a.disconnect).toHaveBeenCalledWith(true);
+      expect(b.disconnect).toHaveBeenCalledWith(true);
     });
   });
 });

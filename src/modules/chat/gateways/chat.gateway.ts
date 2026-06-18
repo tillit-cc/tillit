@@ -30,6 +30,11 @@ import { SenderKeysService } from '../../sender-keys/services/sender-keys.servic
 import { DeviceLinkService } from '../../../auth/services/device-link.service';
 import { DeviceService } from '../../../auth/services/device.service';
 import type { DeviceLinkNotifier } from '../../../auth/services/device-link.service';
+import {
+  AuthService,
+  PRIMARY_LIVENESS_TOUCH_THROTTLE_MS,
+} from '../../../auth/auth.service';
+import { PRIMARY_DEVICE_ID } from '../../../auth/dto/device-link.dto';
 import { v4 as uuidv4 } from 'uuid';
 import type { AuthenticatedSocket } from '../../../common/types/authenticated-socket';
 
@@ -41,6 +46,19 @@ const MAX_WS_PAYLOAD_BYTES = 64 * 1024;
 // Volatile messages carry inline encrypted media (fire-and-forget, never stored).
 const MAX_WS_VOLATILE_PAYLOAD_BYTES = parseInt(
   process.env.MAX_VOLATILE_PAYLOAD_BYTES || String(10 * 1024 * 1024),
+  10,
+);
+
+// Liveness lock enforcement sweep (ADR-0011 / backend-0022, defect #1).
+// Edge-triggered enforcement (only at login/refresh/connect gates) lets a
+// linked device that is ALREADY connected when the primary goes dark keep
+// operating past the idle threshold — including a stolen device that only
+// receives. A periodic sweep re-evaluates the liveness lock for every live
+// linked socket and force-disconnects the stale ones. Real abuse window is
+// then `PRIMARY_LIVENESS_MAX_IDLE_MS + PRIMARY_LIVENESS_SWEEP_MS`, both
+// operator dials. Default 10 min (within the 5–15 min band of the handoff).
+const PRIMARY_LIVENESS_SWEEP_MS = parseInt(
+  process.env.PRIMARY_LIVENESS_SWEEP_MS || String(10 * 60 * 1000),
   10,
 );
 
@@ -69,6 +87,15 @@ export class ChatGateway
   private redisPubClient?: RedisClientType;
   private redisSubClient?: RedisClientType;
 
+  // In-memory throttle for the primary-liveness bump on socket activity
+  // (backend-0022, part A). Keyed by userId → last touch epoch ms. Lets a
+  // high-frequency authenticated socket settle for a single timestamp compare
+  // per event, hitting the DB at most once per throttle window per primary.
+  private readonly primaryLivenessTouchedAt = new Map<number, number>();
+
+  // Handle for the periodic liveness-enforcement sweep (part B).
+  private livenessSweepTimer?: ReturnType<typeof setInterval>;
+
   constructor(
     private messageService: MessageService,
     private roomService: RoomService,
@@ -77,10 +104,16 @@ export class ChatGateway
     private deviceLinkService: DeviceLinkService,
     @Inject(forwardRef(() => DeviceService))
     private deviceService: DeviceService,
+    @Inject(forwardRef(() => AuthService))
+    private authService: AuthService,
     @Optional() private redisConfig?: RedisConfigService,
   ) {}
 
   async onModuleDestroy() {
+    if (this.livenessSweepTimer) {
+      clearInterval(this.livenessSweepTimer);
+      this.livenessSweepTimer = undefined;
+    }
     if (this.redisPubClient) {
       this.redisPubClient.destroy();
     }
@@ -176,6 +209,17 @@ export class ChatGateway
     };
     this.deviceLinkService.setNotifier(notifier);
     this.deviceService.setNotifier(notifier);
+
+    // Start the periodic liveness-enforcement sweep (ADR-0011, backend-0022
+    // defect #1). Each instance sweeps ONLY its own local sockets, reading the
+    // shared `lastActiveAt` anchor from the DB — no cross-pod coordination
+    // needed on EKS. `unref()` so the timer never keeps the process alive.
+    this.livenessSweepTimer = setInterval(() => {
+      void this.sweepLivenessLockedDevices();
+    }, PRIMARY_LIVENESS_SWEEP_MS);
+    if (typeof this.livenessSweepTimer.unref === 'function') {
+      this.livenessSweepTimer.unref();
+    }
 
     // Setup Redis adapter ONLY in CLOUD mode (multi-instance Socket.IO)
     // In SELFHOSTED mode, runs in single-instance mode without Redis
@@ -301,6 +345,101 @@ export class ChatGateway
     this.logger.log(
       `Client disconnected: ${client.id}, User: ${client.user?.userId}`,
     );
+    this.primaryLivenessTouchedAt.delete(client.user?.userId);
+  }
+
+  /**
+   * Liveness anchor bump on in-progress socket activity (ADR-0011,
+   * backend-0022 part A — fixes defect #2, the false positive).
+   *
+   * The liveness lock used to be edge-triggered: the primary only refreshed
+   * `lastActiveAt` at the login/refresh/connect gates. A primary holding a
+   * persistent socket (desktop always open, phone on a stable network)
+   * connects once and never re-bumps, so after `PRIMARY_LIVENESS_MAX_IDLE_MS`
+   * of *continuous* connection it reads as stale and the sweep below would
+   * wrongly lock out its own linked devices while it is plainly online.
+   *
+   * Calling this on every authenticated socket event makes liveness reflect
+   * the live connection. The bump is in-memory throttled (one timestamp
+   * compare per event) so a busy socket costs at most one DB write per
+   * `PRIMARY_LIVENESS_TOUCH_THROTTLE_MS` window per primary.
+   */
+  private touchPrimaryActivity(client: AuthenticatedSocket): void {
+    const userId = client.user?.userId;
+    const deviceId = client.user?.deviceId ?? PRIMARY_DEVICE_ID;
+    // Only the primary is the account's liveness anchor; linked devices never
+    // refresh it (that would defeat the lock — a rogue linked device must not
+    // keep itself alive).
+    if (!userId || deviceId !== PRIMARY_DEVICE_ID) return;
+    const now = Date.now();
+    const last = this.primaryLivenessTouchedAt.get(userId) ?? 0;
+    if (now - last < PRIMARY_LIVENESS_TOUCH_THROTTLE_MS) return;
+    this.primaryLivenessTouchedAt.set(userId, now);
+    // refreshPrimaryLiveness is itself DB-throttled; fire-and-forget so we
+    // never block message relay on the anchor write.
+    void this.authService.refreshPrimaryLiveness(userId).catch((err) => {
+      this.logger.warn(
+        `Failed to refresh primary liveness for user ${userId}: ${
+          (err as Error)?.message
+        }`,
+      );
+    });
+  }
+
+  /**
+   * Periodic liveness-lock enforcement (ADR-0011, backend-0022 part B — fixes
+   * defect #1, the under-enforcement). Iterates this instance's live linked
+   * sockets and force-disconnects any whose primary has gone idle past the
+   * threshold. The reconnect then hits the connect gate, which rejects with
+   * `PRIMARY_INACTIVE` — already handled client-side as a soft, reversible
+   * lock (frontend-0024 / desktop-0025), so no client change is needed.
+   *
+   * Catches the stolen-but-passive linked device too: the tick does not depend
+   * on the linked device emitting any traffic.
+   *
+   * Multi-instance (EKS): uses `local` so each pod only disconnects its own
+   * sockets; the `lastActiveAt` anchor it checks lives in the shared DB, so no
+   * cross-pod coordination is required.
+   */
+  private async sweepLivenessLockedDevices(): Promise<void> {
+    try {
+      const sockets = await this.server.local.fetchSockets();
+
+      // Group live linked sockets by user so the liveness check runs once per
+      // user, not once per socket.
+      const linkedByUser = new Map<
+        number,
+        Array<{ socket: any; deviceId: number }>
+      >();
+      for (const socket of sockets) {
+        const u = (socket as any).user as
+          | { userId?: number; deviceId?: number }
+          | undefined;
+        const deviceId = u?.deviceId ?? PRIMARY_DEVICE_ID;
+        if (!u?.userId || deviceId === PRIMARY_DEVICE_ID) continue;
+        const list = linkedByUser.get(u.userId) ?? [];
+        list.push({ socket, deviceId });
+        linkedByUser.set(u.userId, list);
+      }
+
+      for (const [userId, entries] of linkedByUser) {
+        try {
+          await this.authService.assertPrimaryActive(userId);
+        } catch {
+          // Primary dark past the threshold → force-disconnect the linked
+          // device's sockets (same primitive the revocation path uses).
+          for (const { socket, deviceId } of entries) {
+            this.logger.log(
+              `Liveness sweep: force-disconnecting linked device ` +
+                `(user ${userId}, device ${deviceId}) — PRIMARY_INACTIVE`,
+            );
+            socket.disconnect(true);
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error('Error during liveness sweep:', error);
+    }
   }
 
   /**
@@ -318,6 +457,9 @@ export class ChatGateway
     if (!userId) {
       return { error: 'Unauthorized' };
     }
+
+    // Reflect live primary activity on the liveness anchor (backend-0022 A).
+    this.touchPrimaryActivity(client);
 
     try {
       // Resolve volatile flag: source of truth is the envelope (message),
@@ -476,6 +618,9 @@ export class ChatGateway
       return { error: 'Unauthorized' };
     }
 
+    // Reflect live primary activity on the liveness anchor (backend-0022 A).
+    this.touchPrimaryActivity(client);
+
     try {
       // Reject oversized payloads. For per-device fan-out, `recipients[]` holds
       // one independent packet per linked device — bound each packet
@@ -560,6 +705,9 @@ export class ChatGateway
       return { error: 'Unauthorized' };
     }
 
+    // Reflect live primary activity on the liveness anchor (backend-0022 A).
+    this.touchPrimaryActivity(client);
+
     try {
       const roomId = data.roomId;
 
@@ -610,6 +758,9 @@ export class ChatGateway
       return { error: 'Unauthorized' };
     }
 
+    // Reflect live primary activity on the liveness anchor (backend-0022 A).
+    this.touchPrimaryActivity(client);
+
     try {
       const roomId = data.roomId;
 
@@ -656,6 +807,9 @@ export class ChatGateway
     if (!userId) {
       return { error: 'Unauthorized' };
     }
+
+    // Reflect live primary activity on the liveness anchor (backend-0022 A).
+    this.touchPrimaryActivity(client);
 
     try {
       const distributions = await this.senderKeysService.getPendingSenderKeys(
