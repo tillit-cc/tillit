@@ -2,10 +2,12 @@ import {
   Injectable,
   UnauthorizedException,
   ConflictException,
+  BadRequestException,
   HttpStatus,
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { PublicKey } from '@signalapp/libsignal-client';
 import { Repository, DataSource, In } from 'typeorm';
 import { SignalKey, KeyTypeId } from '../../../entities/signal-key.entity';
 import { User } from '../../../entities/user.entity';
@@ -545,6 +547,12 @@ export class KeysService {
   ): void {
     if (deviceAuthPublicKey === undefined) return;
     if (!device.authPublicKey) {
+      // Validate the key actually parses as a libsignal public key BEFORE the
+      // TOFU bind. Otherwise a malformed key gets stored and `PublicKey.
+      // deserialize` throws at every subsequent login → permanent
+      // `DEVICE_AUTH_INVALID`. With no server-side recovery (ADR-0011) that
+      // bricks the account, so reject the bad key here with a 400 instead.
+      this.assertParseableAuthKey(deviceAuthPublicKey);
       device.authPublicKey = deviceAuthPublicKey; // trust-on-first-use bind
       return;
     }
@@ -554,5 +562,22 @@ export class KeysService {
       statusCode: HttpStatus.CONFLICT,
       error: 'DEVICE_AUTH_MISMATCH',
     });
+  }
+
+  /**
+   * Reject a `deviceAuthPublicKey` that is not a deserializable libsignal
+   * public key before it is ever stored (ADR-0010/0011). Mirrors the
+   * `PublicKey.deserialize` the login path runs, so a key that binds here is
+   * guaranteed to be verifiable later.
+   */
+  private assertParseableAuthKey(deviceAuthPublicKey: string): void {
+    try {
+      PublicKey.deserialize(Buffer.from(deviceAuthPublicKey, 'base64'));
+    } catch {
+      throw new BadRequestException({
+        statusCode: HttpStatus.BAD_REQUEST,
+        error: 'DEVICE_AUTH_KEY_INVALID',
+      });
+    }
   }
 }

@@ -15,6 +15,7 @@ import {
   Logger,
   OnModuleDestroy,
   Optional,
+  UnauthorizedException,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
@@ -425,7 +426,20 @@ export class ChatGateway
       for (const [userId, entries] of linkedByUser) {
         try {
           await this.authService.assertPrimaryActive(userId);
-        } catch {
+        } catch (err) {
+          // `assertPrimaryActive` throws `UnauthorizedException` ONLY for a
+          // genuinely stale primary. Anything else (e.g. a transient DB error
+          // in the `findOne`) must NOT be treated as PRIMARY_INACTIVE —
+          // otherwise a momentary DB blip would force-disconnect every linked
+          // device on this pod. Narrow the catch: disconnect only on the real
+          // liveness signal, log-and-skip on the unexpected.
+          if (!(err instanceof UnauthorizedException)) {
+            this.logger.warn(
+              `Liveness sweep: skipping user ${userId} after unexpected ` +
+                `error (not disconnecting): ${(err as Error)?.message}`,
+            );
+            continue;
+          }
           // Primary dark past the threshold → force-disconnect the linked
           // device's sockets (same primitive the revocation path uses).
           for (const { socket, deviceId } of entries) {

@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { UnauthorizedException } from '@nestjs/common';
 import { ChatGateway } from './chat.gateway';
 import { MessageService } from '../services/message.service';
 import { RoomService } from '../services/room.service';
@@ -528,7 +529,7 @@ describe('ChatGateway', () => {
       const linked = fakeSocket(7, 2, 'sock-linked');
       gateway.server = serverWith([linked]);
       authService.assertPrimaryActive.mockRejectedValue(
-        new Error('PRIMARY_INACTIVE'),
+        new UnauthorizedException('Primary device inactive', 'PRIMARY_INACTIVE'),
       );
 
       await sweep();
@@ -543,7 +544,7 @@ describe('ChatGateway', () => {
       const passive = fakeSocket(9, 3, 'sock-passive');
       gateway.server = serverWith([passive]);
       authService.assertPrimaryActive.mockRejectedValue(
-        new Error('PRIMARY_INACTIVE'),
+        new UnauthorizedException('Primary device inactive', 'PRIMARY_INACTIVE'),
       );
 
       await sweep();
@@ -566,7 +567,7 @@ describe('ChatGateway', () => {
       gateway.server = serverWith([primary]);
       // Even if the check would throw, the primary must not be enrolled.
       authService.assertPrimaryActive.mockRejectedValue(
-        new Error('PRIMARY_INACTIVE'),
+        new UnauthorizedException('Primary device inactive', 'PRIMARY_INACTIVE'),
       );
 
       await sweep();
@@ -580,7 +581,7 @@ describe('ChatGateway', () => {
       const b = fakeSocket(7, 3, 'b');
       gateway.server = serverWith([a, b]);
       authService.assertPrimaryActive.mockRejectedValue(
-        new Error('PRIMARY_INACTIVE'),
+        new UnauthorizedException('Primary device inactive', 'PRIMARY_INACTIVE'),
       );
 
       await sweep();
@@ -588,6 +589,21 @@ describe('ChatGateway', () => {
       expect(authService.assertPrimaryActive).toHaveBeenCalledTimes(1);
       expect(a.disconnect).toHaveBeenCalledWith(true);
       expect(b.disconnect).toHaveBeenCalledWith(true);
+    });
+
+    it('does NOT disconnect on a transient (non-liveness) error', async () => {
+      // A momentary DB error inside assertPrimaryActive must not be mistaken
+      // for PRIMARY_INACTIVE — otherwise a blip force-disconnects every linked
+      // device. Only an UnauthorizedException is the real liveness signal.
+      const linked = fakeSocket(7, 2, 'sock-linked');
+      gateway.server = serverWith([linked]);
+      authService.assertPrimaryActive.mockRejectedValue(
+        new Error('ECONNREFUSED: database is down'),
+      );
+
+      await sweep();
+
+      expect(linked.disconnect).not.toHaveBeenCalled();
     });
   });
 });

@@ -17,6 +17,17 @@ import {
   makeUserDevice,
 } from '../../../test/helpers';
 
+// Mock libsignal-client. `applyDeviceAuthKey` calls `PublicKey.deserialize`
+// to validate a device-auth key before the TOFU bind (ADR-0010/0011); the
+// default mock accepts any key, individual tests override it to throw.
+jest.mock('@signalapp/libsignal-client', () => ({
+  PublicKey: {
+    deserialize: jest.fn().mockReturnValue({
+      verify: jest.fn().mockReturnValue(true),
+    }),
+  },
+}));
+
 describe('KeysService', () => {
   let service: KeysService;
   let signalKeyRepo: ReturnType<typeof createMockRepository>;
@@ -409,6 +420,34 @@ describe('KeysService', () => {
           'new-key',
         ),
       ).rejects.toMatchObject({ response: { error: 'DEVICE_AUTH_MISMATCH' } });
+    });
+
+    it('rejects a malformed device-auth key before binding (DEVICE_AUTH_KEY_INVALID)', async () => {
+      const { PublicKey } = require('@signalapp/libsignal-client');
+      PublicKey.deserialize.mockImplementationOnce(() => {
+        throw new Error('bad point');
+      });
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+      userDeviceRepo.findOne.mockResolvedValue(
+        makeUserDevice({ userId: 1, deviceId: 1, authPublicKey: null }),
+      );
+
+      await expect(
+        service.uploadKeys(
+          1,
+          1,
+          'id-key',
+          123,
+          undefined,
+          undefined,
+          undefined,
+          'not-a-real-key',
+        ),
+      ).rejects.toMatchObject({
+        response: { error: 'DEVICE_AUTH_KEY_INVALID' },
+      });
+      // The bad key must never be persisted.
+      expect(userDeviceRepo.save).not.toHaveBeenCalled();
     });
   });
 });
