@@ -16,6 +16,10 @@
  *   - malformed auth key on first bind → 400 DEVICE_AUTH_KEY_INVALID
  *   - re-binding a different auth key → 409 DEVICE_AUTH_MISMATCH
  *   - transition mode vs DEVICE_AUTH_REQUIRED enforcement
+ *   - backward-compat: a PRE-UPDATE client (old app — no device-auth key, no
+ *     deviceAuthSignature) keeps logging in against the new backend in
+ *     transition mode, and the DEVICE_AUTH_REQUIRED gate fails CLOSED (401).
+ *     Pass --expect-enforce when the server runs DEVICE_AUTH_REQUIRED=true.
  *   - liveness lock probe (linked device login while primary is fresh/stale)
  *
  * RUN (from the backend repo root) — baseUrl is REQUIRED (arg or TILLIT_URL env):
@@ -51,9 +55,13 @@ import { execSync } from 'child_process';
 //                   then revives the primary and asserts the unlock).
 //   --db <path>     sqlite DB path used by --liveness to age the anchor
 //                   (default: sqlite-data/tillit.db; or env TILLIT_DB).
+//   --expect-enforce  assert the backward-compat scenario against a server with
+//                   DEVICE_AUTH_REQUIRED=true (legacy re-login must fail closed
+//                   with 401 DEVICE_AUTH_REQUIRED instead of 2xx).
 const ARGV = process.argv.slice(2);
 const ARG = ARGV.find((a) => /^https?:\/\//.test(a)) || process.env.TILLIT_URL;
 const WANT_LIVENESS = ARGV.includes('--liveness');
+const EXPECT_ENFORCE = ARGV.includes('--expect-enforce');
 const dbFlagIdx = ARGV.indexOf('--db');
 const DB_PATH =
   (dbFlagIdx >= 0 ? ARGV[dbFlagIdx + 1] : process.env.TILLIT_DB) ||
@@ -430,20 +438,43 @@ async function main() {
     ok('device 2 prova a salire a deviceId:1 → 401', climb.status === 401, `status=${climb.status}`);
   }
 
-  // 6. Transition mode vs enforcement (dipende da DEVICE_AUTH_REQUIRED del server)
-  console.log('\n6) Transition mode vs DEVICE_AUTH_REQUIRED (dipende dal server)');
+  // 6. Backward-compat — un client PRE-UPDATE (app vecchia: nessuna device-auth
+  //    key, nessuna deviceAuthSignature) deve continuare a funzionare contro il
+  //    backend nuovo finché siamo in transition mode. Sotto enforcement il gate
+  //    deve fallire CHIUSO (401 DEVICE_AUTH_REQUIRED) — segnale operativo che
+  //    DEVICE_AUTH_REQUIRED NON va flippato finché le app rilasciate non bindano
+  //    la device-auth key. È esattamente lo scenario "app vecchia + backend nuovo".
+  console.log('\n6) Backward-compat: client pre-update (app vecchia, nessuna device-auth)');
   {
-    const acct = newAccount();
+    const acct = newAccount(); // utente "legacy", come l'app attualmente rilasciata
     const reg = randReg();
-    const a1 = await authIdentity(acct, 1, reg);
-    await uploadKeys(acct, 1, reg, a1.data.accessToken); // NESSUNA auth key → device "legacy"
-    const relogin = await authIdentity(acct, 1, reg); // senza device-auth
-    if (is2xx(relogin.status)) {
-      note(`device senza auth-key → login OK (status ${relogin.status}): server in TRANSITION mode (DEVICE_AUTH_REQUIRED=false)`);
-    } else if (relogin.status === 401 && relogin.data?.error === 'DEVICE_AUTH_REQUIRED') {
-      note('device senza auth-key → 401 DEVICE_AUTH_REQUIRED: enforcement ATTIVO (DEVICE_AUTH_REQUIRED=true)');
+    // 6a. Primo /auth/identity (utente nuovo): sempre permesso, anche sotto
+    //     enforcement — il ramo device-auth scatta solo per utenti già esistenti.
+    const first = await authIdentity(acct, 1, reg); // NIENTE deviceAuthSignature
+    ok('app vecchia: primo /auth/identity (utente nuovo) → 2xx', is2xx(first.status), `status=${first.status}`);
+    // 6b. POST /keys SENZA deviceAuthPublicKey (come l'app vecchia): non deve mai
+    //     dare 400/409 e non lega alcuna auth-key (la riga resta in transition).
+    const keys = await uploadKeys(acct, 1, reg, first.data.accessToken); // niente authKey
+    ok('app vecchia: POST /keys senza deviceAuthPublicKey → 2xx (nessun bind)', is2xx(keys.status), `status=${keys.status} error=${keys.data?.error ?? ''}`);
+    // 6c. Re-login SENZA deviceAuthSignature: ciò che l'app vecchia fa a ogni
+    //     riavvio / scadenza token. QUESTO è il caso "app vecchia + backend nuovo".
+    const relogin = await authIdentity(acct, 1, reg); // niente deviceAuthSignature
+    if (EXPECT_ENFORCE) {
+      ok(
+        'enforcement: re-login app vecchia → 401 DEVICE_AUTH_REQUIRED (gate fail-closed)',
+        relogin.status === 401 && relogin.data?.error === 'DEVICE_AUTH_REQUIRED',
+        `status=${relogin.status} error=${relogin.data?.error ?? relogin.data?.message}`,
+      );
+      note('NON flippare DEVICE_AUTH_REQUIRED=true finché le app rilasciate non bindano la device-auth key.');
     } else {
-      ok('transition/enforcement: risposta attesa', false, `status=${relogin.status} error=${relogin.data?.error}`);
+      ok(
+        'transition: re-login app vecchia → 2xx (utente pre-update resta operativo)',
+        is2xx(relogin.status),
+        `status=${relogin.status} error=${relogin.data?.error ?? relogin.data?.message}`,
+      );
+      // ripetibile, non un one-shot: l'app vecchia deve poter loggare all'infinito
+      const relogin2 = await authIdentity(acct, 1, reg);
+      ok('transition: l\'app vecchia continua a loggare ripetutamente → 2xx', is2xx(relogin2.status), `status=${relogin2.status}`);
     }
   }
 

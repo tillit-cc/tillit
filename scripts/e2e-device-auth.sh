@@ -9,7 +9,8 @@
 # Stages:
 #   1. transition mode      (DEVICE_AUTH_REQUIRED unset)        → full suite green
 #   2. enforcement          (DEVICE_AUTH_REQUIRED=true)         → full suite green
-#                            (pairing must still bootstrap; legacy unbound rejected)
+#                            (pairing must still bootstrap; a PRE-UPDATE/legacy
+#                             client without a bound auth key fails closed → 401)
 #   3. liveness lock         (PRIMARY_LIVENESS_MAX_IDLE_MS=120s) → lock + reversible unlock
 #
 # Usage:
@@ -119,7 +120,9 @@ fi
 # ── Stage 2: enforcement ──────────────────────────────────────────────────────
 stage "Stage 2 — enforcement (DEVICE_AUTH_REQUIRED=true)"
 if start_server DEVICE_AUTH_REQUIRED=true; then
-  run_client || FAIL=1
+  # --expect-enforce: the backward-compat scenario asserts the legacy re-login
+  # fails CLOSED (401 DEVICE_AUTH_REQUIRED) instead of 2xx under enforcement.
+  run_client --expect-enforce || FAIL=1
 else
   FAIL=1
 fi
