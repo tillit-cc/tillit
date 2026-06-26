@@ -424,6 +424,47 @@ describe('AuthService', () => {
       if (prev === undefined) delete process.env.DEVICE_AUTH_REQUIRED;
       else process.env.DEVICE_AUTH_REQUIRED = prev;
     });
+
+    it('allows a pending_link device identity-only even when DEVICE_AUTH_REQUIRED=true (bootstrap)', async () => {
+      // A freshly-paired device (pending_link, no auth key yet) must be able to
+      // do its first /auth/identity to obtain the token it needs to bind its
+      // key at POST /keys — otherwise enforcement permanently breaks pairing.
+      const prev = process.env.DEVICE_AUTH_REQUIRED;
+      process.env.DEVICE_AUTH_REQUIRED = 'true';
+      PublicKey.deserialize.mockReturnValue({
+        verify: jest.fn().mockReturnValue(true),
+      });
+      challengeStore.consumeChallenge.mockResolvedValue({
+        nonce: 'bm9uY2U=',
+        identityPublicKey: 'dGVzdC1rZXk=',
+      });
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+      userDeviceRepo.findOne.mockImplementation((opts: any) =>
+        Promise.resolve(
+          opts.where.deviceId === 1
+            ? makeUserDevice({
+                userId: 1,
+                deviceId: 1,
+                lastActiveAt: new Date(),
+              })
+            : makeUserDevice({
+                userId: 1,
+                deviceId: 2,
+                status: UserDeviceStatus.PENDING_LINK,
+                authPublicKey: null,
+              }),
+        ),
+      );
+
+      const result = await service.authenticateByIdentity(
+        makeDto({ deviceId: 2 }),
+        TEST_HOST,
+      );
+      expect(result.accessToken).toBeTruthy();
+
+      if (prev === undefined) delete process.env.DEVICE_AUTH_REQUIRED;
+      else process.env.DEVICE_AUTH_REQUIRED = prev;
+    });
   });
 
   describe('liveness lock (ADR-0011)', () => {

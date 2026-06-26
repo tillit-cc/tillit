@@ -22,6 +22,7 @@ import {
   DeviceSummaryDto,
   PRIMARY_DEVICE_ID,
 } from '../dto/device-link.dto';
+import { toDate } from '../../utils/timestamp';
 
 class PrimaryRequiredException extends ForbiddenException {
   constructor() {
@@ -235,8 +236,8 @@ export class DeviceService {
       status: device.status,
       isPrimary: device.deviceId === PRIMARY_DEVICE_ID,
       isCurrent: device.deviceId === currentDeviceId,
-      createdAt: device.createdAt.toISOString(),
-      lastSeen: device.lastActiveAt ? device.lastActiveAt.toISOString() : null,
+      createdAt: (toDate(device.createdAt) ?? new Date(0)).toISOString(),
+      lastSeen: toDate(device.lastActiveAt)?.toISOString() ?? null,
       userAgent: device.userAgent ?? null,
     };
   }

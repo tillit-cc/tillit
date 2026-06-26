@@ -17,6 +17,7 @@ import { ChallengeStore } from './services/challenge.store';
 import { AuthHostService } from './services/auth-host.service';
 import { BanService } from '../modules/ban/ban.service';
 import { PRIMARY_DEVICE_ID } from './dto/device-link.dto';
+import { toDate } from '../utils/timestamp';
 
 // Liveness lock (ADR-0011): how recently the primary's lastActiveAt must have
 // been written before another authenticated hit bothers updating it again.
@@ -104,7 +105,18 @@ export class AuthService {
           dto.deviceAuthSignature,
           challengeMessage,
         );
-      } else if (this.deviceAuthRequired()) {
+      } else if (
+        this.deviceAuthRequired() &&
+        device?.status !== UserDeviceStatus.PENDING_LINK
+      ) {
+        // Enforcement on: a device without a bound auth key is rejected — EXCEPT
+        // a `pending_link` device, which is mid-bootstrap. It was just authorized
+        // by the primary via `/complete`, has no auth key yet (it binds on its
+        // first `POST /keys`, which needs the very token this call mints), and is
+        // always `deviceId >= 2` — so exempting it does NOT reopen finding #4
+        // (deviceId:1 self-promotion). Without this carve-out
+        // DEVICE_AUTH_REQUIRED=true would permanently break new-device pairing:
+        // no linked device could complete its bootstrap.
         throw new UnauthorizedException(
           'Device auth required',
           'DEVICE_AUTH_REQUIRED',
@@ -301,7 +313,8 @@ export class AuthService {
     });
     if (!primary) return;
     const now = Date.now();
-    const last = primary.lastActiveAt ? primary.lastActiveAt.getTime() : 0;
+    const lastDate = toDate(primary.lastActiveAt);
+    const last = lastDate ? lastDate.getTime() : 0;
     if (now - last < PRIMARY_LIVENESS_TOUCH_THROTTLE_MS) return;
     primary.lastActiveAt = new Date(now);
     await this.userDeviceRepository.save(primary);
@@ -319,8 +332,9 @@ export class AuthService {
     const primary = await this.userDeviceRepository.findOne({
       where: { userId, deviceId: PRIMARY_DEVICE_ID },
     });
-    if (!primary || !primary.lastActiveAt) return; // grace
-    const idle = Date.now() - primary.lastActiveAt.getTime();
+    const last = toDate(primary?.lastActiveAt);
+    if (!primary || !last) return; // grace
+    const idle = Date.now() - last.getTime();
     if (idle > this.primaryLivenessMaxIdleMs()) {
       throw new UnauthorizedException(
         'Primary device inactive',

@@ -512,8 +512,12 @@ export class KeysService {
       deviceId,
       registrationId,
       identityPublicKey,
-      authPublicKey: deviceAuthPublicKey ?? null,
     });
+    // Route the first bind through applyDeviceAuthKey so the key is validated
+    // (DEVICE_AUTH_KEY_INVALID on a non-deserializable key) exactly like the
+    // existing-row path — otherwise a malformed key on a brand-new device row
+    // would be stored unvalidated and brick login (no recovery, ADR-0011).
+    this.applyDeviceAuthKey(device, deviceAuthPublicKey);
 
     await this.userDeviceRepository.save(device);
   }

@@ -377,7 +377,9 @@ describe('KeysService', () => {
         'device-auth-pub',
       );
 
-      expect(userDeviceRepo.create).toHaveBeenCalledWith(
+      // The key is validated + applied (applyDeviceAuthKey) onto the entity
+      // before save — assert on the persisted row, not the create() args.
+      expect(userDeviceRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ authPublicKey: 'device-auth-pub' }),
       );
     });
@@ -447,6 +449,35 @@ describe('KeysService', () => {
         response: { error: 'DEVICE_AUTH_KEY_INVALID' },
       });
       // The bad key must never be persisted.
+      expect(userDeviceRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed device-auth key on a NEW device row too (create path)', async () => {
+      // Regression: the create branch of upsertUserDevice used to assign
+      // authPublicKey directly, bypassing validation — a malformed key on a
+      // brand-new device (the common first-upload case) got stored and bricked
+      // login. It must validate exactly like the existing-row path.
+      const { PublicKey } = require('@signalapp/libsignal-client');
+      PublicKey.deserialize.mockImplementationOnce(() => {
+        throw new Error('bad point');
+      });
+      userRepo.findOne.mockResolvedValue(makeUser({ id: 1 }));
+      userDeviceRepo.findOne.mockResolvedValue(null); // brand-new device row
+
+      await expect(
+        service.uploadKeys(
+          1,
+          1,
+          'id-key',
+          123,
+          undefined,
+          undefined,
+          undefined,
+          'not-a-real-key',
+        ),
+      ).rejects.toMatchObject({
+        response: { error: 'DEVICE_AUTH_KEY_INVALID' },
+      });
       expect(userDeviceRepo.save).not.toHaveBeenCalled();
     });
   });
