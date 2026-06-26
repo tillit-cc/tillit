@@ -35,3 +35,10 @@ jobs:
 
       - name: Run tests
         run: pnpm run test --passWithNoTests
+
+      # End-to-end device-auth + liveness against a real server booted in
+      # PRODUCTION mode (migrations, NOT synchronize). This is the check that
+      # catches entity↔migration schema drift — the class of bug that unit/e2e
+      # jest (synchronize/mocks) cannot see. See scripts/e2e-device-auth.sh.
+      - name: E2E device-auth + liveness (migration mode)
+        run: bash scripts/e2e-device-auth.sh
