@@ -38,11 +38,14 @@ One command to install (Docker required on Linux, Docker Desktop on macOS):
 
 ```bash
 # Linux / Raspberry Pi
-curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh -o /tmp/tillit-install.sh && sudo bash /tmp/tillit-install.sh
 
 # macOS (no sudo needed)
-curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh -o /tmp/tillit-install.sh && bash /tmp/tillit-install.sh
 ```
+
+> The installer is interactive. Download-then-run (instead of `curl ... | bash`) keeps your
+> terminal attached to the script, so the prompts work correctly.
 
 The interactive installer asks how you want to expose your server:
 
@@ -196,7 +199,7 @@ curl http://localhost:3000/health
 #### Bare-metal (no Docker)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install-bare.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install-bare.sh -o /tmp/tillit-install-bare.sh && sudo bash /tmp/tillit-install-bare.sh
 ```
 
 #### Development

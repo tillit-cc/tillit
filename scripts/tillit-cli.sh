@@ -15,7 +15,7 @@
 #   config list            Show all settings
 #   config get <KEY>       Read a configuration value
 #   config set KEY=VALUE   Set a configuration value
-#   onion                  Show .onion address (Tor mode only)
+#   onion                  Show .onion address + ensure it's in AUTH_ALLOWED_HOSTS (Tor mode only)
 #   update                 Update to the latest version
 #   help                   Show this help message
 #   version                Show CLI version
@@ -1167,11 +1167,42 @@ cmd_onion() {
         echo -e "  ${BOLD}Onion Address${NC}"
         echo -e "  $addr"
         echo ""
+        ensure_onion_in_allowlist "$addr"
     else
         echo -e "${YELLOW}Onion address not available yet — Tor may still be bootstrapping.${NC}"
         echo "  Check Tor logs: tillit logs"
         return 1
     fi
+}
+
+# The auth challenge is bound to the host the client connects to (domain
+# separation). If the .onion is not in AUTH_ALLOWED_HOSTS, POST /auth/identity
+# returns 400 "Host not allowed for authentication". Repair it here for boxes
+# installed before this was wired into install.sh / firstboot.
+ensure_onion_in_allowlist() {
+    local host
+    host=$(echo "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    [ -z "$host" ] && return 0
+
+    local current
+    current=$(env_get AUTH_ALLOWED_HOSTS)
+    case ",$current," in
+        *",$host,"*) return 0 ;;  # already present, nothing to do
+    esac
+
+    local updated
+    if [ -n "$current" ]; then updated="$current,$host"; else updated="$host"; fi
+    env_set AUTH_ALLOWED_HOSTS "$updated"
+    echo -e "${GREEN}Added .onion to AUTH_ALLOWED_HOSTS.${NC} Recreating tillit to apply..."
+
+    if [ "$DEPLOY_MODE" = "docker" ]; then
+        local compose_file
+        compose_file=$(find_compose_file)
+        cd "$INSTALL_DIR" && docker compose -f "$compose_file" up -d --force-recreate tillit >/dev/null 2>&1 || true
+    else
+        service_restart
+    fi
+    echo -e "${GREEN}Done.${NC} Clients connecting via the .onion can now authenticate."
 }
 
 cmd_update() {
@@ -1242,7 +1273,7 @@ cmd_help() {
     echo "    moderation help        Show all moderation commands"
     echo ""
     echo -e "  ${BOLD}Tor${NC}"
-    echo "    onion                  Show .onion address (Tor mode only)"
+    echo "    onion                  Show .onion address + ensure it's in AUTH_ALLOWED_HOSTS (Tor mode only)"
     echo ""
     echo -e "  ${BOLD}Maintenance${NC}"
     echo "    update                 Update to the latest version"

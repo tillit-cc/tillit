@@ -501,7 +501,7 @@ setup_named_tunnel() {
     echo -e "${YELLOW}Step 1: Authenticate with Cloudflare${NC}"
     echo "A browser window will open. Log in and authorize cloudflared."
     echo ""
-    read -p "Press Enter to continue..."
+    read -p "Press Enter to continue..." < /dev/tty
     cloudflared tunnel login
 
     # Step 2: Create tunnel

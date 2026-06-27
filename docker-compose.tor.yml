@@ -14,6 +14,14 @@
 #   2. docker compose -f docker-compose.tor.yml up -d
 #   3. Wait ~60 seconds for Tor bootstrap
 #   4. docker compose -f docker-compose.tor.yml exec tor cat /var/lib/tor/hidden_service/hostname
+#   5. IMPORTANT: add that .onion address to AUTH_ALLOWED_HOSTS in .env, then
+#      recreate tillit so it reloads the env:
+#        echo "AUTH_ALLOWED_HOSTS=<your>.onion" >> .env
+#        docker compose -f docker-compose.tor.yml up -d --force-recreate tillit
+#      Without this, POST /auth/identity returns 400 "Host not allowed for
+#      authentication" — the auth challenge is bound to the host the client uses
+#      (domain separation). scripts/install.sh and the RPi first-boot installer
+#      do this automatically; the `tillit onion` CLI command also repairs it.
 #
 # For Raspberry Pi 4 / ARM64 devices
 

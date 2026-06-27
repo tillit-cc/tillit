@@ -35,7 +35,7 @@ After flashing, **eject and re-insert** the SD card so the boot partition mounts
 Open a terminal on your PC and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/rpi-setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/rpi-setup.sh -o /tmp/tillit-rpi-setup.sh && bash /tmp/tillit-rpi-setup.sh
 ```
 
 Or if you've cloned the repo:

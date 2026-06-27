@@ -2,11 +2,15 @@
 #
 # TilliT Self-Hosted Installation Script (Docker)
 #
-# Usage (public repo):
-#   curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh | sudo bash
+# Usage (public repo) — download then run, so the interactive prompts work:
+#   curl -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh -o /tmp/tillit-install.sh && sudo bash /tmp/tillit-install.sh
+#
+#   NOTE: do NOT pipe with `curl ... | sudo bash`. Piping makes the script's stdin
+#   the pipe itself, so interactive prompts (and sub-commands like `cloudflared
+#   tunnel login`) cannot read the user's answers and the install runs through.
 #
 # Usage (private repo):
-#   curl -H "Authorization: token <GITHUB_TOKEN>" -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh | sudo GITHUB_TOKEN=<token> bash
+#   curl -H "Authorization: token <GITHUB_TOKEN>" -fsSL https://raw.githubusercontent.com/tillit-cc/tillit/main/scripts/install.sh -o /tmp/tillit-install.sh && sudo GITHUB_TOKEN=<token> bash /tmp/tillit-install.sh
 #
 # Or with the script already downloaded:
 #   sudo GITHUB_TOKEN=<token> ./install.sh
@@ -147,6 +151,32 @@ detect_os() {
 
 sed_inplace() {
     if [ "$IS_MACOS" = true ]; then sed -i '' "$@"; else sed -i "$@"; fi
+}
+
+# Append a host to AUTH_ALLOWED_HOSTS in .env (idempotent).
+# The auth challenge is bound to the host the client used (domain separation),
+# so the .onion / domain the client connects to MUST be in this allowlist or
+# POST /auth/identity returns 400 "Host not allowed for authentication".
+ensure_auth_allowed_host() {
+    local host
+    host=$(echo "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    [ -z "$host" ] && return 0
+    [ -f .env ] || return 0
+
+    if grep -q "^AUTH_ALLOWED_HOSTS=" .env; then
+        local current
+        current=$(grep "^AUTH_ALLOWED_HOSTS=" .env | head -n1 | cut -d'=' -f2-)
+        case ",$current," in
+            *",$host,"*) return 0 ;;  # already present
+        esac
+        local updated
+        if [ -n "$current" ]; then updated="$current,$host"; else updated="$host"; fi
+        sed_inplace "s|^AUTH_ALLOWED_HOSTS=.*|AUTH_ALLOWED_HOSTS=$updated|" .env
+    else
+        # The sample ships it commented out — append a live line.
+        echo "AUTH_ALLOWED_HOSTS=$host" >> .env
+    fi
+    log_success "Added $host to AUTH_ALLOWED_HOSTS"
 }
 
 get_local_ip() {
@@ -559,7 +589,7 @@ setup_named_tunnel() {
     echo -e "${YELLOW}Step 1: Authenticate with Cloudflare${NC}"
     echo "A browser window will open. Log in and authorize cloudflared."
     echo ""
-    read -p "Press Enter to continue..."
+    read -p "Press Enter to continue..." < /dev/tty
     cloudflared tunnel login
 
     # Step 2: Create tunnel
@@ -937,6 +967,10 @@ wait_for_onion() {
         if [ -n "$ONION_ADDRESS" ]; then
             ONION_ADDRESS=$(echo "$ONION_ADDRESS" | tr -d '[:space:]')
             log_success "Tor hidden service ready: http://$ONION_ADDRESS"
+            # Bind the auth challenge to the .onion host, then recreate tillit so
+            # it reloads .env (env_file is read at container create time).
+            ensure_auth_allowed_host "$ONION_ADDRESS"
+            docker compose -f "$COMPOSE_FILE" up -d --force-recreate tillit >/dev/null 2>&1 || true
             return 0
         fi
         echo -n "."

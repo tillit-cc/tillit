@@ -265,6 +265,24 @@ if [ "$NETWORK_MODE" = "tor" ]; then
         if [ -n "$onion_addr" ]; then
             onion_addr=$(echo "$onion_addr" | tr -d '[:space:]')
             log "Tor hidden service ready: http://$onion_addr"
+            # Bind the auth challenge to the .onion host (domain separation):
+            # without this, POST /auth/identity returns 400 "Host not allowed".
+            onion_host=$(echo "$onion_addr" | tr '[:upper:]' '[:lower:]')
+            if grep -q "^AUTH_ALLOWED_HOSTS=" .env; then
+                current=$(grep "^AUTH_ALLOWED_HOSTS=" .env | head -n1 | cut -d'=' -f2-)
+                case ",$current," in
+                    *",$onion_host,"*) : ;;  # already present
+                    *)
+                        if [ -n "$current" ]; then updated="$current,$onion_host"; else updated="$onion_host"; fi
+                        sed -i "s|^AUTH_ALLOWED_HOSTS=.*|AUTH_ALLOWED_HOSTS=$updated|" .env
+                        ;;
+                esac
+            else
+                echo "AUTH_ALLOWED_HOSTS=$onion_host" >> .env
+            fi
+            log "Added $onion_host to AUTH_ALLOWED_HOSTS"
+            # Recreate tillit so it reloads .env (env_file is read at create time).
+            docker compose -f "$INSTALL_DIR/docker-compose.yml" up -d --force-recreate tillit >/dev/null 2>&1 || true
             break
         fi
         sleep 2
